@@ -39,6 +39,7 @@ import { getActionBarActions } from '../../../platform/actions/browser/menuEntry
 import { IHoverService } from '../../../platform/hover/browser/hover.js';
 import { HiddenItemStrategy, MenuWorkbenchToolBar } from '../../../platform/actions/browser/toolbar.js';
 import { DeferredPromise } from '../../../base/common/async.js';
+import { DesignerBranchSwitcher } from './designerBranchSwitcher/designerBranchSwitcher.js';
 
 export enum CompositeBarPosition {
 	TOP,
@@ -108,6 +109,7 @@ export interface IPaneCompositePart extends IView {
 export abstract class AbstractPaneCompositePart extends CompositePart<PaneComposite> implements IPaneCompositePart {
 
 	private static readonly MIN_COMPOSITE_BAR_WIDTH = 50;
+	private static readonly CHAT_VIEW_CONTAINER_ID = 'workbench.panel.chat';
 
 	get snap(): boolean {
 		// Always allow snapping closed
@@ -127,6 +129,8 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 	private emptyPaneMessageElement: HTMLElement | undefined;
 
 	private globalToolBar: MenuWorkbenchToolBar | undefined;
+	private projectToolbarElement: HTMLElement | undefined;
+	private readonly projectToolbarSwitcher = this._register(new MutableDisposable<DesignerBranchSwitcher>());
 	private blockOpening: DeferredPromise<PaneComposite | undefined> | undefined = undefined;
 	protected contentDimension: Dimension | undefined;
 
@@ -207,6 +211,7 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 
 	private onDidOpen(composite: IComposite): void {
 		this.activePaneContextKey.set(composite.getId());
+		this.updateProjectToolbarPlaceholder(composite.getId());
 	}
 
 	private onDidClose(composite: IComposite): void {
@@ -214,16 +219,19 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		if (this.activePaneContextKey.get() === id) {
 			this.activePaneContextKey.reset();
 		}
+		this.updateProjectToolbarPlaceholder(undefined);
 	}
 
 	protected override showComposite(composite: Composite): void {
 		super.showComposite(composite);
 		this.layoutCompositeBar();
+		this.updateProjectToolbarPlaceholder(composite.getId());
 		this.layoutEmptyMessage();
 	}
 
 	protected override hideActiveComposite(): Composite | undefined {
 		const composite = super.hideActiveComposite();
+		this.updateProjectToolbarPlaceholder(undefined);
 		this.layoutCompositeBar();
 		this.layoutEmptyMessage();
 		return composite;
@@ -324,6 +332,31 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 				},
 			}));
 		}
+	}
+
+	private updateProjectToolbarPlaceholder(activeCompositeId: string | undefined): void {
+		const shouldShow = activeCompositeId === AbstractPaneCompositePart.CHAT_VIEW_CONTAINER_ID;
+		const compositeBarUsesTopHeader = this.shouldShowCompositeBar() && this.getCompositeBarPosition() === CompositeBarPosition.TOP;
+
+		if (!shouldShow || compositeBarUsesTopHeader) {
+			if (this.projectToolbarElement) {
+				this.projectToolbarSwitcher.clear();
+				this.removeHeaderArea();
+				this.projectToolbarElement = undefined;
+			}
+
+			return;
+		}
+
+		if (this.projectToolbarElement) {
+			return;
+		}
+
+		this.projectToolbarElement = $('.project-toolbar-placeholder');
+		this.projectToolbarElement.setAttribute('role', 'toolbar');
+		this.projectToolbarElement.setAttribute('aria-label', localize('projectToolbarPlaceholderAriaLabel', "Project switcher"));
+		this.projectToolbarSwitcher.value = this.instantiationService.createInstance(DesignerBranchSwitcher, this.projectToolbarElement);
+		this.setHeaderArea(this.projectToolbarElement);
 	}
 
 	protected override createTitleArea(parent: HTMLElement): HTMLElement | undefined {

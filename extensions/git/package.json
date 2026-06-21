@@ -51,6 +51,10 @@
   ],
   "activationEvents": [
     "*",
+    "onCommand:_designerBranches.getState",
+    "onCommand:_designerBranches.checkout",
+    "onCommand:_designerBranches.saveAndCheckout",
+    "onCommand:_designerBranches.create",
     "onEditSession:file",
     "onFileSystem:git",
     "onFileSystem:git-show"

@@ -1,0 +1,287 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.designer-branch-switcher {
+	position: relative;
+	display: flex;
+	align-items: center;
+	width: 100%;
+	height: 100%;
+	padding: 4px 8px;
+	box-sizing: border-box;
+}
+
+.designer-branch-switcher__button {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto auto;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	height: 26px;
+	padding: 0 8px;
+	color: var(--vscode-sideBarTitle-foreground);
+	background: var(--vscode-dropdown-background);
+	border: 1px solid var(--vscode-dropdown-border);
+	border-radius: 4px;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.designer-branch-switcher__button:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.designer-branch-switcher__button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+
+.designer-branch-switcher__label {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	gap: 4px;
+}
+
+.designer-branch-switcher__project,
+.designer-branch-switcher__branch {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.designer-branch-switcher__project {
+	flex: 0 1 auto;
+	color: var(--vscode-sideBarTitle-foreground);
+}
+
+.designer-branch-switcher__separator {
+	flex: 0 0 auto;
+	opacity: 0.65;
+}
+
+.designer-branch-switcher__branch {
+	flex: 1 1 auto;
+	font-weight: 600;
+}
+
+.designer-branch-switcher__sync {
+	color: var(--vscode-icon-foreground);
+}
+
+.designer-branch-switcher__sync--problem {
+	color: var(--vscode-errorForeground);
+}
+
+.designer-branch-switcher__dropdown {
+	position: absolute;
+	z-index: 40;
+	top: calc(100% + 4px);
+	left: 8px;
+	right: 8px;
+	min-width: 260px;
+	max-height: min(520px, calc(100vh - 120px));
+	overflow: auto;
+	padding: 6px;
+	color: var(--vscode-foreground);
+	background: var(--vscode-dropdown-background);
+	border: 1px solid var(--vscode-widget-border);
+	border-radius: 6px;
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow);
+}
+
+.designer-branch-switcher__tree {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.designer-branch-switcher__folder,
+.designer-branch-switcher__row {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr) auto auto;
+	align-items: center;
+	gap: 6px;
+	min-height: 26px;
+	padding: 0 6px 0 calc(6px + (var(--designer-branch-depth, 0) * 14px));
+	border-radius: 4px;
+	box-sizing: border-box;
+}
+
+.designer-branch-switcher__folder {
+	color: var(--vscode-descriptionForeground);
+	font-weight: 600;
+}
+
+.designer-branch-switcher__row {
+	width: 100%;
+	color: var(--vscode-foreground);
+	background: transparent;
+	border: 0;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.designer-branch-switcher__row:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.designer-branch-switcher__row:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.designer-branch-switcher__row--current {
+	background: var(--vscode-list-activeSelectionBackground);
+	color: var(--vscode-list-activeSelectionForeground);
+	cursor: default;
+}
+
+.designer-branch-switcher__row--remoteOnly {
+	opacity: 0.62;
+}
+
+.designer-branch-switcher__row--localOnly {
+	color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+.designer-branch-switcher__row--problem {
+	color: var(--vscode-errorForeground);
+}
+
+.designer-branch-switcher__row-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.designer-branch-switcher__badge {
+	min-width: 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	white-space: nowrap;
+}
+
+.designer-branch-switcher__row-check {
+	color: currentColor;
+}
+
+.designer-branch-switcher__empty,
+.designer-branch-switcher__problem {
+	padding: 8px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.designer-branch-switcher__problem {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	color: var(--vscode-errorForeground);
+}
+
+.designer-branch-switcher__problem-message {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.designer-branch-switcher__problem-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-left: auto;
+}
+
+.designer-branch-switcher__problem-action,
+.designer-branch-switcher__problem-dismiss {
+	height: 24px;
+	border: 0;
+	border-radius: 4px;
+	font: inherit;
+	cursor: pointer;
+}
+
+.designer-branch-switcher__problem-action {
+	padding: 0 8px;
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+	white-space: nowrap;
+}
+
+.designer-branch-switcher__problem-action:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.designer-branch-switcher__problem-dismiss {
+	width: 24px;
+	padding: 0;
+	color: var(--vscode-icon-foreground);
+	background: transparent;
+}
+
+.designer-branch-switcher__problem-dismiss:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.designer-branch-switcher__new {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	gap: 6px;
+	margin-top: 8px;
+	padding-top: 8px;
+	border-top: 1px solid var(--vscode-widget-border);
+}
+
+.designer-branch-switcher__prefix,
+.designer-branch-switcher__create,
+.designer-branch-switcher__input {
+	height: 26px;
+	box-sizing: border-box;
+	font: inherit;
+	border-radius: 4px;
+}
+
+.designer-branch-switcher__prefix,
+.designer-branch-switcher__create {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	padding: 0 8px;
+	color: var(--vscode-button-secondaryForeground);
+	background: var(--vscode-button-secondaryBackground);
+	border: 0;
+	cursor: pointer;
+}
+
+.designer-branch-switcher__prefix:hover,
+.designer-branch-switcher__create:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.designer-branch-switcher__input {
+	min-width: 0;
+	padding: 0 8px;
+	color: var(--vscode-input-foreground);
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border);
+}
+
+.designer-branch-switcher__input:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.designer-branch-switcher__prefix-warning {
+	grid-column: 1 / -1;
+	color: var(--vscode-inputValidation-warningForeground);
+	background: var(--vscode-inputValidation-warningBackground);
+	border: 1px solid var(--vscode-inputValidation-warningBorder);
+	border-radius: 4px;
+	padding: 6px 8px;
+	font-size: 11px;
+	line-height: 15px;
+}

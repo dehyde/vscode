@@ -17,6 +17,16 @@
 	outline-offset: -2px;
 }
 
+.monaco-workbench .pane-composite-part > .project-toolbar-placeholder {
+	display: flex;
+	align-items: center;
+	box-sizing: border-box;
+	height: 35px;
+	overflow: visible;
+	border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border);
+	background-color: var(--vscode-sideBar-background);
+}
+
 /* Global left actions toolbar: rendered first visually via CSS order */
 .monaco-workbench .pane-composite-part > .title > .global-actions-left {
 	order: -1;

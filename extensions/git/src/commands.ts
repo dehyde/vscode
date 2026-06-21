@@ -20,6 +20,8 @@ import { ApiRepository } from './api/api1';
 import { getRemoteSourceActions, pickRemoteSource } from './remoteSource';
 import { RemoteSourceAction } from './typings/git-base';
 import { CloneManager } from './cloneManager';
+import { buildDesignerBranchTree, mergeDesignerBranchRefs } from './designerBranchModel';
+import { DesignerBranchCheckoutResult, DesignerBranchRef, DesignerBranchState } from './designerBranchTypes';
 
 abstract class CheckoutCommandItem implements QuickPickItem {
 	abstract get label(): string;
@@ -2811,6 +2813,210 @@ export class CommandCenter {
 		return this._checkout(repository, { treeish });
 	}
 
+	@command('_designerBranches.getState')
+	async getDesignerBranchesState(): Promise<DesignerBranchState> {
+		const repository = await this.pickDesignerRepository();
+		return this.getDesignerBranchesStateForRepository(repository);
+	}
+
+	@command('_designerBranches.checkout')
+	async checkoutDesignerBranch(options?: { branchName?: string }): Promise<DesignerBranchCheckoutResult> {
+		const branchName = options?.branchName;
+		if (!branchName) {
+			throw new Error(l10n.t('No branch selected.'));
+		}
+
+		const repository = await this.pickDesignerRepository();
+		const state = await this.getDesignerBranchesStateForRepository(repository);
+		const branch = state.branches.find(candidate => candidate.name === branchName);
+
+		if (!branch) {
+			throw new Error(l10n.t('Branch "{0}" was not found.', branchName));
+		}
+
+		const config = workspace.getConfiguration('git', Uri.file(repository.root));
+		const pullBeforeCheckout = config.get<boolean>('pullBeforeCheckout', false) === true;
+
+		await repository.status();
+		if (this.hasDesignerUnsavedChanges(repository)) {
+			return {
+				state,
+				blocked: {
+					reason: 'dirtyWorkTree',
+					message: l10n.t('Save your current changes before switching branches.')
+				}
+			};
+		}
+
+		try {
+			if (branch.localName) {
+				await repository.checkout(branch.localName, { pullBeforeCheckout });
+			} else if (branch.remote && branch.remoteName) {
+				const remoteBranchName = `${branch.remote}/${branch.remoteName}`;
+				const trackingBranches = await repository.findTrackingBranches(remoteBranchName);
+
+				if (trackingBranches.length > 0 && trackingBranches[0].name) {
+					await repository.checkout(trackingBranches[0].name, { pullBeforeCheckout });
+				} else {
+					await repository.checkoutTracking(remoteBranchName);
+				}
+			} else {
+				throw new Error(l10n.t('Branch "{0}" cannot be checked out.', branchName));
+			}
+		} catch (error) {
+			if (error instanceof GitError && error.gitErrorCode === GitErrorCodes.DirtyWorkTree) {
+				return {
+					state,
+					blocked: {
+						reason: 'dirtyWorkTree',
+						message: l10n.t('Save your current changes before switching branches.')
+					}
+				};
+			}
+
+			if (error instanceof GitError && error.gitErrorCode === GitErrorCodes.WorktreeBranchAlreadyUsed) {
+				return {
+					state,
+					blocked: {
+						reason: 'worktreeBranchAlreadyUsed',
+						message: l10n.t('This branch is already open in another worktree.')
+					}
+				};
+			}
+
+			throw error;
+		}
+
+		return { state: await this.getDesignerBranchesStateForRepository(repository) };
+	}
+
+	@command('_designerBranches.saveAndCheckout')
+	async saveAndCheckoutDesignerBranch(options?: { branchName?: string }): Promise<DesignerBranchCheckoutResult> {
+		const branchName = options?.branchName;
+		if (!branchName) {
+			throw new Error(l10n.t('No branch selected.'));
+		}
+
+		const repository = await this.pickDesignerRepository();
+		await repository.status();
+
+		if (!this.hasDesignerUnsavedChanges(repository)) {
+			return this.checkoutDesignerBranch({ branchName });
+		}
+
+		if (repository.mergeGroup.resourceStates.length > 0) {
+			return {
+				state: await this.getDesignerBranchesStateForRepository(repository),
+				blocked: {
+					reason: 'dirtyWorkTree',
+					message: l10n.t('Resolve merge conflicts before saving and switching.')
+				}
+			};
+		}
+
+		const currentBranchName = await this.ensureDesignerCurrentBranch(repository);
+		if (!currentBranchName) {
+			return {
+				state: await this.getDesignerBranchesStateForRepository(repository),
+				blocked: {
+					reason: 'branchNameRequired',
+					message: l10n.t('Add a branch name before saving.')
+				}
+			};
+		}
+
+		try {
+			await this.saveDesignerCurrentBranch(repository, currentBranchName);
+		} catch {
+			return {
+				state: await this.getDesignerBranchesStateForRepository(repository),
+				blocked: {
+					reason: 'saveFailed',
+					message: l10n.t('Branch could not be saved to the cloud. Check Git, then try again.')
+				}
+			};
+		}
+
+		try {
+			return await this.checkoutDesignerBranch({ branchName });
+		} catch {
+			return {
+				state: await this.getDesignerBranchesStateForRepository(repository),
+				blocked: {
+					reason: 'saveFailed',
+					message: l10n.t('Branch was saved, but could not be switched. Check Git, then try again.')
+				}
+			};
+		}
+	}
+
+	private hasDesignerUnsavedChanges(repository: Repository): boolean {
+		return repository.mergeGroup.resourceStates.length > 0 ||
+			repository.indexGroup.resourceStates.length > 0 ||
+			repository.workingTreeGroup.resourceStates.length > 0 ||
+			repository.untrackedGroup.resourceStates.length > 0;
+	}
+
+	private async ensureDesignerCurrentBranch(repository: Repository): Promise<string | undefined> {
+		if (repository.HEAD?.name) {
+			return repository.HEAD.name;
+		}
+
+		const branchName = await this.promptForBranchName(repository, undefined, 'design/new-branch');
+		if (!branchName) {
+			return undefined;
+		}
+
+		await repository.branch(branchName, true);
+		return branchName;
+	}
+
+	private async saveDesignerCurrentBranch(repository: Repository, branchName: string): Promise<void> {
+		const resources = [
+			...repository.workingTreeGroup.resourceStates.map(resource => resource.resourceUri),
+			...repository.untrackedGroup.resourceStates.map(resource => resource.resourceUri)
+		];
+
+		if (resources.length > 0) {
+			await repository.add(resources);
+		}
+
+		const message = l10n.t('Save designer changes');
+		await repository.commit(message, { all: true, noVerify: true });
+		await repository.status();
+
+		const defaultRemote = repository.getDefaultRemote();
+		const upstream = repository.HEAD?.upstream;
+
+		if (upstream) {
+			await repository.push(repository.HEAD);
+		} else if (defaultRemote) {
+			await repository.pushTo(defaultRemote.name, `${branchName}:${branchName}`, true);
+		} else {
+			throw new Error(l10n.t('No remote is configured for this project.'));
+		}
+	}
+
+	@command('_designerBranches.create')
+	async createDesignerBranch(options?: { branchName?: string }): Promise<DesignerBranchState> {
+		const branchName = options?.branchName?.trim();
+		if (!branchName) {
+			throw new Error(l10n.t('Enter a branch name.'));
+		}
+
+		const repository = await this.pickDesignerRepository();
+		const state = await this.getDesignerBranchesStateForRepository(repository);
+
+		if (!state.defaultBranch) {
+			throw new Error(l10n.t('The default branch could not be found.'));
+		}
+
+		await repository.checkout(state.defaultBranch, { pullBeforeCheckout: true });
+		await repository.branch(branchName, true, state.defaultBranch);
+
+		return this.getDesignerBranchesStateForRepository(repository);
+	}
+
 	@command('git.graph.checkout', { repository: true })
 	async checkout2(repository: Repository, historyItem?: SourceControlHistoryItem, historyItemRefId?: string): Promise<void> {
 		const historyItemRef = historyItem?.references?.find(r => r.id === historyItemRefId);
@@ -2834,6 +3040,124 @@ export class CommandCenter {
 		} else {
 			await repository.checkoutTracking(historyItemRef.name);
 		}
+	}
+
+	private async pickDesignerRepository(): Promise<Repository> {
+		const workspaceRoot = workspace.workspaceFolders?.[0]?.uri.fsPath;
+
+		if (workspaceRoot) {
+			const workspaceRepository = this.model.repositories.find(repository =>
+				!repository.isHidden &&
+				(repository.kind === 'repository' || repository.kind === 'submodule') &&
+				pathEquals(repository.root, workspaceRoot)
+			);
+
+			if (workspaceRepository) {
+				return workspaceRepository;
+			}
+		}
+
+		const repository = await this.model.pickRepository(['repository', 'submodule']);
+
+		if (!repository) {
+			throw new Error(l10n.t('No repository selected.'));
+		}
+
+		return repository;
+	}
+
+	private async getDesignerBranchesStateForRepository(repository: Repository): Promise<DesignerBranchState> {
+		const refs = await repository.getRefs({});
+		const defaultRemote = repository.getDefaultRemote();
+		const branchRefs = this.toDesignerBranchRefs(refs);
+		const defaultBranch = this.getDesignerDefaultBranch(refs, defaultRemote?.name, repository.HEAD?.name);
+		const branches = mergeDesignerBranchRefs(branchRefs, defaultRemote?.name, defaultBranch, repository.HEAD?.name);
+
+		return {
+			projectName: getRepositoryLabel(repository.root),
+			defaultBranch,
+			currentBranch: repository.HEAD?.name,
+			syncState: 'synced',
+			branches,
+			tree: buildDesignerBranchTree(branches)
+		};
+	}
+
+	private toDesignerBranchRefs(refs: readonly (Ref | Branch)[]): DesignerBranchRef[] {
+		const branchRefs: DesignerBranchRef[] = [];
+
+		for (const ref of refs) {
+			if (!ref.name) {
+				continue;
+			}
+
+			if (ref.type === RefType.Head) {
+				branchRefs.push({
+					type: 'local',
+					name: ref.name,
+					commit: ref.commit,
+					upstream: 'upstream' in ref ? ref.upstream : undefined
+				});
+			} else if (ref.type === RefType.RemoteHead && ref.remote) {
+				const remoteBranchName = this.getDesignerRemoteBranchName(ref);
+
+				if (!remoteBranchName) {
+					continue;
+				}
+
+				branchRefs.push({
+					type: 'remote',
+					remote: ref.remote,
+					name: remoteBranchName,
+					commit: ref.commit
+				});
+			}
+		}
+
+		return branchRefs;
+	}
+
+	private getDesignerRemoteBranchName(ref: Ref | Branch): string | undefined {
+		if (!ref.name || !ref.remote) {
+			return undefined;
+		}
+
+		if (ref.name === 'HEAD') {
+			return undefined;
+		}
+
+		const remotePrefix = `${ref.remote}/`;
+		const branchName = ref.name.startsWith(remotePrefix) ? ref.name.slice(remotePrefix.length) : ref.name;
+
+		return branchName === 'HEAD' ? undefined : branchName;
+	}
+
+	private getDesignerDefaultBranch(refs: readonly (Ref | Branch)[], defaultRemote: string | undefined, currentBranch: string | undefined): string | undefined {
+		const remoteHead = refs.find(ref => ref.type === RefType.RemoteHead && ref.remote === defaultRemote && ref.name === 'HEAD');
+
+		if (remoteHead?.commit) {
+			const defaultRemoteBranch = refs.find(ref =>
+				ref.type === RefType.RemoteHead &&
+				ref.remote === defaultRemote &&
+				ref.name !== 'HEAD' &&
+				ref.commit === remoteHead.commit
+			);
+
+			const defaultRemoteBranchName = defaultRemoteBranch && this.getDesignerRemoteBranchName(defaultRemoteBranch);
+
+			if (defaultRemoteBranchName) {
+				return defaultRemoteBranchName;
+			}
+		}
+
+		for (const defaultBranchName of ['main', 'master']) {
+			if (refs.some(ref => ref.type === RefType.Head && ref.name === defaultBranchName) ||
+				refs.some(ref => ref.type === RefType.RemoteHead && this.getDesignerRemoteBranchName(ref) === defaultBranchName)) {
+				return defaultBranchName;
+			}
+		}
+
+		return currentBranch;
 	}
 
 	@command('git.checkoutDetached', { repository: true })
