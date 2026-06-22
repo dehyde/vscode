@@ -260,7 +260,9 @@ class ClaudeCodeDefaultExperienceContribution extends Disposable {
 
 	private async openClaudeCodeByDefault(): Promise<void> {
 		await this.extensionService.whenInstalledExtensionsRegistered();
-		await this.extensionService.activateByEvent('onStartupFinished');
+
+		await this.paneCompositeService.openPaneComposite(ClaudeCodeDefaultExperienceContribution.claudeSecondarySidebarContainer, ViewContainerLocation.AuxiliaryBar, true);
+		this.extensionService.activateByEvent('onStartupFinished').catch(error => this.logService.trace('Failed to activate startup extensions before opening Claude Code', error));
 
 		for (let attempt = 0; attempt < ClaudeCodeDefaultExperienceContribution.openRetryCount; attempt++) {
 			try {
@@ -338,7 +340,7 @@ registerWorkbenchContribution2(NativeBuiltinToolsContribution.ID, NativeBuiltinT
 registerWorkbenchContribution2(ChatCommandLineHandler.ID, ChatCommandLineHandler, WorkbenchPhase.BlockRestore);
 registerWorkbenchContribution2(ChatSuspendThrottlingHandler.ID, ChatSuspendThrottlingHandler, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(ChatLifecycleHandler.ID, ChatLifecycleHandler, WorkbenchPhase.AfterRestored);
-registerWorkbenchContribution2(ClaudeCodeDefaultExperienceContribution.ID, ClaudeCodeDefaultExperienceContribution, WorkbenchPhase.Eventually);
+registerWorkbenchContribution2(ClaudeCodeDefaultExperienceContribution.ID, ClaudeCodeDefaultExperienceContribution, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(AgentHostContribution.ID, AgentHostContribution, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(AgentHostTerminalContribution.ID, AgentHostTerminalContribution, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(OpenWorkspaceInAgentsContribution.ID, OpenWorkspaceInAgentsContribution, WorkbenchPhase.BlockRestore);
