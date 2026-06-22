@@ -7,6 +7,7 @@
 	position: relative;
 	display: flex;
 	align-items: center;
+	gap: 2px;
 	width: 100%;
 	height: 100%;
 	padding: 4px 8px;
@@ -14,12 +15,11 @@
 }
 
 .designer-branch-switcher__button {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto auto;
+	display: inline-flex;
 	align-items: center;
-	gap: 8px;
-	width: 100%;
-	height: 26px;
+	gap: 4px;
+	min-width: 0;
+	height: 24px;
 	padding: 0 8px;
 	color: var(--vscode-sideBarTitle-foreground);
 	background: var(--vscode-dropdown-background);
@@ -28,6 +28,16 @@
 	font: inherit;
 	text-align: left;
 	cursor: pointer;
+}
+
+.designer-branch-switcher__repo-button {
+	flex: 0 1 auto;
+	width: fit-content;
+	max-width: min(50%, 220px);
+}
+
+.designer-branch-switcher__branch-button {
+	flex: 1 1 auto;
 }
 
 .designer-branch-switcher__button:hover {
@@ -153,14 +163,23 @@
 	overflow: auto;
 }
 
+.designer-branch-switcher__repo-list {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-height: 0;
+	overflow: auto;
+}
+
 .designer-branch-switcher__folder,
-.designer-branch-switcher__row {
+.designer-branch-switcher__row,
+.designer-branch-switcher__repo-row {
 	display: grid;
 	grid-template-columns: 16px minmax(0, 1fr) auto auto;
 	align-items: center;
 	gap: 6px;
 	min-height: 26px;
-	padding: 0 6px 0 calc(6px + (var(--designer-branch-depth, 0) * 14px));
+	padding: 0 6px;
 	border-radius: 4px;
 	box-sizing: border-box;
 }
@@ -170,7 +189,8 @@
 	font-weight: 600;
 }
 
-.designer-branch-switcher__row {
+.designer-branch-switcher__row,
+.designer-branch-switcher__repo-row {
 	width: 100%;
 	color: var(--vscode-foreground);
 	background: transparent;
@@ -180,28 +200,33 @@
 	cursor: pointer;
 }
 
-.designer-branch-switcher__row:hover {
+.designer-branch-switcher__row:hover,
+.designer-branch-switcher__repo-row:hover {
 	background: var(--vscode-list-hoverBackground);
 }
 
-.designer-branch-switcher__row:focus-visible {
+.designer-branch-switcher__row:focus-visible,
+.designer-branch-switcher__repo-row:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }
 
-.designer-branch-switcher__row--current {
+.designer-branch-switcher__row--current,
+.designer-branch-switcher__repo-row--current {
 	background: var(--vscode-list-activeSelectionBackground);
 	color: var(--vscode-list-activeSelectionForeground);
 	cursor: default;
 }
 
-.designer-branch-switcher__row--switching {
+.designer-branch-switcher__row--switching,
+.designer-branch-switcher__repo-row--switching {
 	background: var(--vscode-list-focusBackground);
 	color: var(--vscode-list-focusForeground);
 	cursor: progress;
 }
 
-.designer-branch-switcher__row:disabled {
+.designer-branch-switcher__row:disabled,
+.designer-branch-switcher__repo-row:disabled {
 	cursor: default;
 }
 
@@ -214,6 +239,15 @@
 }
 
 .designer-branch-switcher__row--problem {
+	color: var(--vscode-errorForeground);
+}
+
+.designer-branch-switcher__repo-row--cloning {
+	opacity: 0.75;
+	cursor: progress;
+}
+
+.designer-branch-switcher__repo-row--problem {
 	color: var(--vscode-errorForeground);
 }
 
@@ -373,4 +407,64 @@
 	padding: 6px 8px;
 	font-size: 11px;
 	line-height: 15px;
+}
+
+.designer-branch-switcher__repo-add-form {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 6px;
+	flex: 0 0 auto;
+	margin-top: 8px;
+	margin-left: -6px;
+	margin-right: -6px;
+	margin-bottom: -6px;
+	padding: 10px 6px 6px;
+	border-top: 1px solid var(--vscode-widget-border);
+	background: var(--vscode-dropdown-background);
+	box-shadow: 0 -10px 18px var(--vscode-widget-shadow);
+}
+
+.designer-branch-switcher__repo-url-input,
+.designer-branch-switcher__repo-add {
+	height: 26px;
+	box-sizing: border-box;
+	font: inherit;
+	border-radius: 4px;
+}
+
+.designer-branch-switcher__repo-url-input {
+	min-width: 0;
+	padding: 0 8px;
+	color: var(--vscode-input-foreground);
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+}
+
+.designer-branch-switcher__repo-url-input:focus {
+	border-color: var(--vscode-focusBorder);
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.designer-branch-switcher__repo-add {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	padding: 0 8px;
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+	border: 0;
+	cursor: pointer;
+}
+
+.designer-branch-switcher__repo-add:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.designer-branch-switcher__repo-add:disabled {
+	color: var(--vscode-disabledForeground);
+	background: var(--vscode-button-secondaryBackground);
+	cursor: default;
+	opacity: 0.65;
 }

@@ -21,7 +21,11 @@ import { getRemoteSourceActions, pickRemoteSource } from './remoteSource';
 import { RemoteSourceAction } from './typings/git-base';
 import { CloneManager } from './cloneManager';
 import { buildDesignerBranchTree, mergeDesignerBranchRefs } from './designerBranchModel';
-import { DesignerBranchCheckoutResult, DesignerBranchRef, DesignerBranchState } from './designerBranchTypes';
+import { DesignerBranchCheckoutResult, DesignerBranchRef, DesignerBranchState, DesignerRepoItem, DesignerRepoState, DesignerRepoSwitchResult } from './designerBranchTypes';
+
+function isBranch(ref: Ref | Branch): ref is Branch {
+	return ref.type === RefType.Head;
+}
 
 abstract class CheckoutCommandItem implements QuickPickItem {
 	abstract get label(): string;
@@ -781,6 +785,8 @@ async function evaluateDiagnosticsCommitHook(repository: Repository, options: Co
 }
 
 export class CommandCenter {
+
+	private static readonly designerReposStorageKey = 'designer.repos.known';
 
 	private disposables: Disposable[];
 	private commandErrors = new CommandErrorOutputTextDocumentContentProvider();
@@ -3023,6 +3029,200 @@ export class CommandCenter {
 		return this.getDesignerBranchesStateForRepository(repository);
 	}
 
+	@command('_designerRepos.getState')
+	async getDesignerReposState(): Promise<DesignerRepoState> {
+		return this.getDesignerReposStateInternal();
+	}
+
+	@command('_designerRepos.clone')
+	async cloneDesignerRepo(options?: { url?: string }): Promise<DesignerRepoState> {
+		const url = options?.url?.trim();
+		if (!url) {
+			throw new Error(l10n.t('Paste a repository URL.'));
+		}
+
+		const existingRepo = (await this.getDesignerReposStateInternal()).repos.find(repo => repo.url === url);
+		if (existingRepo) {
+			return this.getDesignerReposStateInternal({
+				path: existingRepo.path,
+				name: existingRepo.name,
+				url
+			});
+		}
+
+		const parentPath = this.getDesignerCloneParentPath();
+		await workspace.fs.createDirectory(Uri.file(parentPath));
+
+		const repoPath = await this.cloneManager.clone(url, { parentPath, postCloneAction: 'none' });
+		if (!repoPath) {
+			throw new Error(l10n.t('Repository could not be cloned.'));
+		}
+
+		const knownRepo = {
+			path: repoPath,
+			name: getRepositoryLabel(repoPath),
+			url
+		};
+		await this.storeDesignerKnownRepo(knownRepo);
+
+		return this.getDesignerReposStateInternal(knownRepo);
+	}
+
+	@command('_designerRepos.switch')
+	async switchDesignerRepo(options?: { repoPath?: string }): Promise<DesignerRepoSwitchResult> {
+		const repoPath = options?.repoPath?.trim();
+		if (!repoPath) {
+			throw new Error(l10n.t('No repository selected.'));
+		}
+
+		const currentRepoPath = workspace.workspaceFolders?.[0]?.uri.fsPath;
+		if (currentRepoPath && pathEquals(currentRepoPath, repoPath)) {
+			return { state: await this.getDesignerReposStateInternal() };
+		}
+
+		try {
+			const repository = await this.pickDesignerRepository();
+			await repository.status();
+
+			if (this.hasDesignerUnsavedChanges(repository)) {
+				if (repository.mergeGroup.resourceStates.length > 0) {
+					return {
+						state: await this.getDesignerReposStateInternal(),
+						blocked: {
+							reason: 'saveFailed',
+							message: l10n.t('Resolve merge conflicts before switching projects.')
+						}
+					};
+				}
+
+				const currentBranchName = await this.ensureDesignerCurrentBranch(repository);
+				if (!currentBranchName) {
+					return {
+						state: await this.getDesignerReposStateInternal(),
+						blocked: {
+							reason: 'branchNameRequired',
+							message: l10n.t('Add a branch name before saving.')
+						}
+					};
+				}
+
+				await this.saveDesignerCurrentBranch(repository, currentBranchName);
+			}
+		} catch (error) {
+			return {
+				state: await this.getDesignerReposStateInternal(),
+				blocked: {
+					reason: 'saveFailed',
+					message: error instanceof Error ? error.message : String(error)
+				}
+			};
+		}
+
+		await this.storeDesignerKnownRepo({
+			path: repoPath,
+			name: getRepositoryLabel(repoPath)
+		});
+
+		await commands.executeCommand('vscode.openFolder', Uri.file(repoPath), { forceReuseWindow: true });
+		return { state: await this.getDesignerReposStateInternal() };
+	}
+
+	private async getDesignerReposStateInternal(repoToInclude?: { path: string; name: string; url?: string }): Promise<DesignerRepoState> {
+		const currentRepoPath = workspace.workspaceFolders?.[0]?.uri.fsPath;
+		const knownRepos = await this.getDesignerKnownRepos(repoToInclude);
+		const reposByPath = new Map<string, DesignerRepoItem>();
+
+		if (currentRepoPath) {
+			reposByPath.set(this.normalizeDesignerRepoPath(currentRepoPath), {
+				name: getRepositoryLabel(currentRepoPath),
+				path: currentRepoPath,
+				status: 'ready',
+				isCurrent: true
+			});
+		}
+
+		for (const repo of knownRepos) {
+			const key = this.normalizeDesignerRepoPath(repo.path);
+			if (reposByPath.has(key)) {
+				const existing = reposByPath.get(key)!;
+				reposByPath.set(key, {
+					...existing,
+					name: existing.name || repo.name,
+					url: existing.url ?? repo.url
+				});
+				continue;
+			}
+
+			reposByPath.set(key, {
+				name: repo.name || getRepositoryLabel(repo.path),
+				path: repo.path,
+				status: await this.pathExists(repo.path) ? 'ready' : 'problem',
+				isCurrent: currentRepoPath ? pathEquals(currentRepoPath, repo.path) : false,
+				url: repo.url,
+				message: await this.pathExists(repo.path) ? undefined : l10n.t('This local folder could not be found.')
+			});
+		}
+
+		const repos = [...reposByPath.values()].sort((first, second) => {
+			if (first.isCurrent !== second.isCurrent) {
+				return first.isCurrent ? -1 : 1;
+			}
+
+			if (first.status !== second.status) {
+				return first.status === 'ready' ? -1 : second.status === 'ready' ? 1 : 0;
+			}
+
+			return first.name.localeCompare(second.name);
+		});
+
+		return { currentRepoPath, repos };
+	}
+
+	private async getDesignerKnownRepos(repoToInclude?: { path: string; name: string; url?: string }): Promise<{ path: string; name: string; url?: string }[]> {
+		const storedRepos = this.globalState.get<{ path: string; name?: string; url?: string }[]>(CommandCenter.designerReposStorageKey, []);
+		const repos: { path: string; name: string; url?: string }[] = [];
+
+		for (const repo of storedRepos) {
+			if (!repo.path || repos.some(existing => pathEquals(existing.path, repo.path))) {
+				continue;
+			}
+
+			repos.push({
+				path: repo.path,
+				name: repo.name || getRepositoryLabel(repo.path),
+				url: repo.url
+			});
+		}
+
+		if (repoToInclude && !repos.some(repo => pathEquals(repo.path, repoToInclude.path))) {
+			repos.push(repoToInclude);
+		}
+
+		return repos;
+	}
+
+	private async storeDesignerKnownRepo(repoToStore: { path: string; name: string; url?: string }): Promise<void> {
+		const repos = await this.getDesignerKnownRepos(repoToStore);
+		await this.globalState.update(CommandCenter.designerReposStorageKey, repos);
+	}
+
+	private getDesignerCloneParentPath(): string {
+		return path.join(os.homedir(), 'Documents', 'Designer Repos');
+	}
+
+	private normalizeDesignerRepoPath(repoPath: string): string {
+		return path.normalize(repoPath).toLowerCase();
+	}
+
+	private async pathExists(repoPath: string): Promise<boolean> {
+		try {
+			await workspace.fs.stat(Uri.file(repoPath));
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	@command('git.graph.checkout', { repository: true })
 	async checkout2(repository: Repository, historyItem?: SourceControlHistoryItem, historyItemRefId?: string): Promise<void> {
 		const historyItemRef = historyItem?.references?.find(r => r.id === historyItemRefId);
@@ -3111,7 +3311,7 @@ export class CommandCenter {
 					type: 'local',
 					name: ref.name,
 					commit: ref.commit,
-					upstream: 'upstream' in ref ? ref.upstream : undefined
+					upstream: isBranch(ref) ? ref.upstream : undefined
 				});
 			} else if (ref.type === RefType.RemoteHead && ref.remote) {
 				const remoteBranchName = this.getDesignerRemoteBranchName(ref);
