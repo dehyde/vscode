@@ -21,6 +21,7 @@ import { getRemoteSourceActions, pickRemoteSource } from './remoteSource';
 import { RemoteSourceAction } from './typings/git-base';
 import { CloneManager } from './cloneManager';
 import { buildDesignerBranchTree, mergeDesignerBranchRefs } from './designerBranchModel';
+import { DesignerKnownRepo, getDesignerRepoLabel, mergeDesignerKnownRepos } from './designerRepoModel';
 import { DesignerBranchCheckoutResult, DesignerBranchRef, DesignerBranchState, DesignerRepoItem, DesignerRepoRemoveResult, DesignerRepoState, DesignerRepoSwitchResult, DesignerSyncBlockedReason, DesignerSyncStatus } from './designerBranchTypes';
 
 function isBranch(ref: Ref | Branch): ref is Branch {
@@ -3228,7 +3229,7 @@ export class CommandCenter {
 
 		const knownRepo = {
 			path: repoPath,
-			name: getRepositoryLabel(repoPath),
+			name: getDesignerRepoLabel(repoPath),
 			url
 		};
 		await this.storeDesignerKnownRepo(knownRepo);
@@ -3323,7 +3324,7 @@ export class CommandCenter {
 
 		await this.storeDesignerKnownRepo({
 			path: repoPath,
-			name: getRepositoryLabel(repoPath)
+			name: getDesignerRepoLabel(repoPath)
 		});
 
 		await commands.executeCommand('_designerWorkspaceTrust.trustFolder', repoPath);
@@ -3368,7 +3369,7 @@ export class CommandCenter {
 
 		if (currentRepoPath) {
 			reposByPath.set(this.normalizeDesignerRepoPath(currentRepoPath), {
-				name: getRepositoryLabel(currentRepoPath),
+				name: getDesignerRepoLabel(currentRepoPath),
 				path: currentRepoPath,
 				status: 'ready',
 				isCurrent: true
@@ -3388,7 +3389,7 @@ export class CommandCenter {
 			}
 
 			reposByPath.set(key, {
-				name: repo.name || getRepositoryLabel(repo.path),
+				name: repo.name || getDesignerRepoLabel(repo.path),
 				path: repo.path,
 				status: await this.pathExists(repo.path) ? 'ready' : 'problem',
 				isCurrent: currentRepoPath ? pathEquals(currentRepoPath, repo.path) : false,
@@ -3412,39 +3413,19 @@ export class CommandCenter {
 		return { currentRepoPath, repos };
 	}
 
-	private async getDesignerKnownRepos(repoToInclude?: { path: string; name: string; url?: string }): Promise<{ path: string; name: string; url?: string }[]> {
+	private async getDesignerKnownRepos(repoToInclude?: DesignerKnownRepo, currentRepo?: DesignerKnownRepo): Promise<DesignerKnownRepo[]> {
 		const storedRepos = this.globalState.get<{ path: string; name?: string; url?: string }[]>(CommandCenter.designerReposStorageKey, []);
 		const hiddenRepoPaths = await this.getDesignerHiddenRepoPaths();
-		const repos: { path: string; name: string; url?: string }[] = [];
-
-		for (const repo of storedRepos) {
-			if (!repo.path || hiddenRepoPaths.some(hiddenPath => pathEquals(hiddenPath, repo.path)) || repos.some(existing => pathEquals(existing.path, repo.path))) {
-				continue;
-			}
-
-			repos.push({
-				path: repo.path,
-				name: repo.name || getRepositoryLabel(repo.path),
-				url: repo.url
-			});
-		}
-
-		for (const repo of await this.discoverDesignerManagedRepos()) {
-			if (hiddenRepoPaths.some(hiddenPath => pathEquals(hiddenPath, repo.path)) || repos.some(existing => pathEquals(existing.path, repo.path))) {
-				continue;
-			}
-
-			repos.push(repo);
-		}
-
-		if (repoToInclude && !repos.some(repo => pathEquals(repo.path, repoToInclude.path))) {
-			repos.push(repoToInclude);
-		}
-
-		return repos;
+		return mergeDesignerKnownRepos({
+			currentRepo,
+			storedRepos,
+			discoveredRepos: await this.discoverDesignerManagedRepos(),
+			repoToInclude,
+			hiddenRepoPaths
+		});
 	}
 
-	private async discoverDesignerManagedRepos(): Promise<{ path: string; name: string }[]> {
+	private async discoverDesignerManagedRepos(): Promise<DesignerKnownRepo[]> {
 		const parentPath = this.getDesignerCloneParentPath();
 		let entries: [string, FileType][];
 		try {
@@ -3453,7 +3434,7 @@ export class CommandCenter {
 			return [];
 		}
 
-		const repos: { path: string; name: string }[] = [];
+		const repos: DesignerKnownRepo[] = [];
 		for (const [entryName, entryType] of entries) {
 			if (entryType !== FileType.Directory) {
 				continue;
@@ -3466,15 +3447,17 @@ export class CommandCenter {
 
 			repos.push({
 				path: repoPath,
-				name: getRepositoryLabel(repoPath)
+				name: getDesignerRepoLabel(repoPath)
 			});
 		}
 
 		return repos;
 	}
 
-	private async storeDesignerKnownRepo(repoToStore: { path: string; name: string; url?: string }): Promise<void> {
-		const repos = await this.getDesignerKnownRepos(repoToStore);
+	private async storeDesignerKnownRepo(repoToStore: DesignerKnownRepo): Promise<void> {
+		const currentRepoPath = workspace.workspaceFolders?.[0]?.uri.fsPath;
+		const currentRepo = currentRepoPath ? { path: currentRepoPath, name: getDesignerRepoLabel(currentRepoPath) } : undefined;
+		const repos = await this.getDesignerKnownRepos(repoToStore, currentRepo);
 		await this.globalState.update(CommandCenter.designerReposStorageKey, repos);
 		await this.unhideDesignerRepo(repoToStore.path);
 	}
