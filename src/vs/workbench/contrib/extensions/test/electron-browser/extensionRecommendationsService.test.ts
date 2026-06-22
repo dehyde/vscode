@@ -7,7 +7,7 @@ import * as sinon from 'sinon';
 import assert from 'assert';
 import * as uuid from '../../../../../base/common/uuid.js';
 import {
-	IExtensionGalleryService, IGalleryExtensionAssets, IGalleryExtension, IExtensionManagementService, IExtensionTipsService, getTargetPlatform,
+	IExtensionGalleryService, IGalleryExtensionAssets, IGalleryExtension, IExtensionManagementService, IExtensionTipsService, getTargetPlatform, InstallExtensionInfo,
 } from '../../../../../platform/extensionManagement/common/extensionManagement.js';
 import { IWorkbenchExtensionEnablementService, IWorkbenchExtensionManagementService } from '../../../../services/extensionManagement/common/extensionManagement.js';
 import { ExtensionGalleryService } from '../../../../../platform/extensionManagement/common/extensionGalleryService.js';
@@ -27,7 +27,7 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { IPager } from '../../../../../base/common/paging.js';
 import { getGalleryExtensionId } from '../../../../../platform/extensionManagement/common/extensionManagementUtil.js';
 import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
-import { ConfigurationKey, IExtensionsWorkbenchService } from '../../common/extensions.js';
+import { ConfigurationKey, IExtension, IExtensionsWorkbenchService } from '../../common/extensions.js';
 import { TestExtensionEnablementService } from '../../../../services/extensionManagement/test/browser/extensionEnablementService.test.js';
 import { IURLService } from '../../../../../platform/url/common/url.js';
 import { ITextModel } from '../../../../../editor/common/model.js';
@@ -61,7 +61,7 @@ import { platform } from '../../../../../base/common/platform.js';
 import { arch } from '../../../../../base/common/process.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { timeout } from '../../../../../base/common/async.js';
 import { IUpdateService, State } from '../../../../../platform/update/common/update.js';
 import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
@@ -196,6 +196,9 @@ suite('ExtensionRecommendationsService Test', () => {
 	let testObject: ExtensionRecommendationsService;
 	let prompted: boolean;
 	let promptedEmitter: Emitter<void>;
+	let installedGalleryExtensions: IGalleryExtension[];
+	let failedInstallExtensionIds: Set<string>;
+	let loggedErrors: unknown[][];
 	let onModelAddedEvent: Emitter<ITextModel>;
 
 	teardown(async () => {
@@ -239,6 +242,14 @@ suite('ExtensionRecommendationsService Test', () => {
 			onProfileAwareDidInstallExtensions: Event.None,
 			async getInstalled() { return []; },
 			async canInstall() { return true; },
+			async installGalleryExtensions(extensions: InstallExtensionInfo[]) {
+				const extension = extensions[0]?.extension;
+				if (extension && failedInstallExtensionIds.has(extension.identifier.id)) {
+					throw new Error(`Failed to install ${extension.identifier.id}`);
+				}
+				installedGalleryExtensions.push(...extensions.map(({ extension }) => extension));
+				return [];
+			},
 			async getExtensionsControlManifest() { return { malicious: [], deprecated: {}, search: [], publisherMapping: {} }; },
 			async getTargetPlatform() { return getTargetPlatform(platform, arch); },
 		});
@@ -252,7 +263,13 @@ suite('ExtensionRecommendationsService Test', () => {
 		instantiationService.stub(IURLService, NativeURLService);
 		instantiationService.stub(IWorkspaceTagsService, new NoOpWorkspaceTagsService());
 		instantiationService.stub(IStorageService, disposableStore.add(new TestStorageService()));
-		instantiationService.stub(ILogService, new NullLogService());
+		loggedErrors = [];
+		class TestLogService extends NullLogService {
+			override error(...args: unknown[]): void {
+				loggedErrors.push(args);
+			}
+		}
+		instantiationService.stub(ILogService, new TestLogService());
 		instantiationService.stub(IProductService, {
 			extensionRecommendations: {
 				'ms-python.python': {
@@ -309,6 +326,8 @@ suite('ExtensionRecommendationsService Test', () => {
 		instantiationService.stubPromise(IExtensionGalleryService, 'getExtensions', mockExtensionGallery);
 
 		prompted = false;
+		installedGalleryExtensions = [];
+		failedInstallExtensionIds = new Set();
 
 		class TestNotificationService2 extends TestNotificationService {
 			public override prompt(severity: Severity, message: string, choices: IPromptChoice[], options?: IPromptOptions) {
@@ -329,6 +348,22 @@ suite('ExtensionRecommendationsService Test', () => {
 
 	function setUpFolderWorkspace(folderName: string, recommendedExtensions: string[], ignoredRecommendations: string[] = []): Promise<void> {
 		return setUpFolder(folderName, recommendedExtensions, ignoredRecommendations);
+	}
+
+	function stubInstallableRecommendedExtensions(): void {
+		const extensionsWorkbenchService = instantiationService.get(IExtensionsWorkbenchService);
+		const getExtensionsStub = sinon.stub(extensionsWorkbenchService, 'getExtensions').callsFake(async extensionInfos => {
+			return extensionInfos.map(({ id }) => {
+				const gallery = mockExtensionGallery.find(extension => extension.identifier.id === id.toLowerCase());
+				return gallery ? {
+					identifier: { id: gallery.identifier.id },
+					displayName: gallery.displayName,
+					publisherDisplayName: gallery.publisherDisplayName,
+					gallery,
+				} as IExtension : undefined;
+			}).filter((extension): extension is IExtension => !!extension);
+		});
+		disposableStore.add(toDisposable(() => getExtensionsStub.restore()));
 	}
 
 	async function setUpFolder(folderName: string, recommendedExtensions: string[], ignoredRecommendations: string[] = []): Promise<void> {
@@ -391,17 +426,28 @@ suite('ExtensionRecommendationsService Test', () => {
 		return testNoPromptForValidRecommendations([]);
 	}));
 
-	test('ExtensionRecommendationsService: Prompt for valid workspace recommendations', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
+	test('ExtensionRecommendationNotificationService: Auto install valid workspace recommendations without prompt', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
+		stubInstallableRecommendedExtensions();
 		await setUpFolderWorkspace('myFolder', mockTestData.recommendedExtensions);
-		testObject = disposableStore.add(instantiationService.createInstance(ExtensionRecommendationsService));
+		const notificationService = instantiationService.get(IExtensionRecommendationNotificationService);
 
-		await Event.toPromise(promptedEmitter.event);
-		const recommendations = Object.keys(testObject.getAllRecommendationsWithReason());
-		const expected = [...mockTestData.validRecommendedExtensions, 'unknown.extension'];
-		assert.strictEqual(recommendations.length, expected.length);
-		expected.forEach(x => {
-			assert.strictEqual(recommendations.indexOf(x.toLowerCase()) > -1, true);
-		});
+		await notificationService.promptWorkspaceRecommendations(mockTestData.recommendedExtensions);
+
+		assert.ok(!prompted);
+		assert.deepStrictEqual(installedGalleryExtensions.map(extension => extension.identifier.id), mockTestData.validRecommendedExtensions.map(extensionId => extensionId.toLowerCase()));
+	}));
+
+	test('ExtensionRecommendationNotificationService: Auto install logs failures and continues installing remaining recommendations', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {
+		stubInstallableRecommendedExtensions();
+		failedInstallExtensionIds.add(mockTestData.validRecommendedExtensions[0].toLowerCase());
+		await setUpFolderWorkspace('myFolder', mockTestData.validRecommendedExtensions);
+		const notificationService = instantiationService.get(IExtensionRecommendationNotificationService);
+
+		await notificationService.promptWorkspaceRecommendations(mockTestData.validRecommendedExtensions);
+
+		assert.ok(!prompted);
+		assert.deepStrictEqual(installedGalleryExtensions.map(extension => extension.identifier.id), [mockTestData.validRecommendedExtensions[1].toLowerCase()]);
+		assert.ok(loggedErrors.some(([message]) => String(message).includes(mockTestData.validRecommendedExtensions[0].toLowerCase())));
 	}));
 
 	test('ExtensionRecommendationsService: No Prompt for valid workspace recommendations if they are already installed', () => runWithFakedTimers<void>({ useFakeTimers: true }, async () => {

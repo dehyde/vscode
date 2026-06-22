@@ -342,7 +342,7 @@ configurationRegistry.registerConfiguration({
 		'workbench.welcomePage.experimentalOnboarding': {
 			scope: ConfigurationScope.APPLICATION,
 			type: 'boolean',
-			default: true,
+			default: false,
 			tags: ['experimental'],
 			description: localize('workbench.welcomePage.experimentalOnboarding', "When enabled, show the new onboarding experience instead of the classic walkthrough on first launch."),
 			experiment: {
@@ -357,4 +357,3 @@ registerWorkbenchContribution2(StartupPageEditorResolverContribution.ID, Startup
 registerWorkbenchContribution2(StartupPageRunnerContribution.ID, StartupPageRunnerContribution, WorkbenchPhase.AfterRestored);
 
 AccessibleViewRegistry.register(new GettingStartedAccessibleView());
-
