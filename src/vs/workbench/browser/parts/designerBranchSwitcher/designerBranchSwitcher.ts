@@ -53,11 +53,16 @@ export class DesignerBranchSwitcher extends Disposable {
 	private readonly dropdown: HTMLElement;
 
 	private state: DesignerBranchState | undefined;
+	private filterInput: HTMLInputElement | undefined;
+	private currentBranchRow: HTMLElement | undefined;
 	private problemMessage: string | undefined;
 	private blockedCheckoutBranchName: string | undefined;
 	private dropdownVisible = false;
 	private loading = false;
+	private refreshPromise: Promise<void> | undefined;
 	private useDesignPrefix = true;
+	private branchFilter = '';
+	private pointerDownInsideDropdown = false;
 
 	constructor(
 		parent: HTMLElement,
@@ -78,6 +83,11 @@ export class DesignerBranchSwitcher extends Disposable {
 		parent.appendChild(this.container);
 
 		this._register(addDisposableListener(this.button, EventType.CLICK, () => this.toggleDropdown()));
+		this._register(addDisposableListener(this.dropdown, EventType.MOUSE_DOWN, () => {
+			this.pointerDownInsideDropdown = true;
+			getWindow(this.container).setTimeout(() => this.pointerDownInsideDropdown = false, 1000);
+		}, true));
+		this._register(addDisposableListener(this.container, EventType.FOCUS_OUT, event => this.closeDropdownIfFocusMovedOutside(event as FocusEvent), true));
 
 		this.render();
 		this.refresh();
@@ -87,13 +97,40 @@ export class DesignerBranchSwitcher extends Disposable {
 		this.dropdownVisible = !this.dropdownVisible;
 
 		if (this.dropdownVisible) {
-			await this.refresh();
+			this.branchFilter = '';
 			this.installWindowListeners();
+			this.refresh({ updateRemotes: true });
 		} else {
 			this.windowDisposables.clear();
 		}
 
 		this.render();
+		this.focusFilterInput();
+		this.scrollCurrentBranchIntoView();
+	}
+
+	private focusFilterInput(): void {
+		if (!this.dropdownVisible) {
+			return;
+		}
+
+		getWindow(this.container).requestAnimationFrame(() => {
+			this.filterInput?.focus({ preventScroll: true });
+			this.filterInput?.setSelectionRange(this.filterInput.value.length, this.filterInput.value.length);
+		});
+	}
+
+	private scrollCurrentBranchIntoView(): void {
+		if (!this.dropdownVisible) {
+			return;
+		}
+
+		const targetWindow = getWindow(this.container);
+		targetWindow.requestAnimationFrame(() => {
+			targetWindow.requestAnimationFrame(() => {
+				this.currentBranchRow?.scrollIntoView({ block: 'center' });
+			});
+		});
 	}
 
 	private installWindowListeners(): void {
@@ -108,33 +145,86 @@ export class DesignerBranchSwitcher extends Disposable {
 			}
 		}));
 
+		this.windowDisposables.add(addDisposableListener(targetWindow.document, EventType.FOCUS_IN, event => {
+			if (!this.container.contains(event.target as Node)) {
+				this.closeDropdown();
+			}
+		}, true));
+
+		this.windowDisposables.add(addDisposableListener(targetWindow.document, EventType.FOCUS_OUT, event => this.closeDropdownIfFocusMovedOutside(event as FocusEvent), true));
+
+		this.windowDisposables.add(addDisposableListener(targetWindow, EventType.BLUR, () => this.closeDropdownIfDocumentFocusMovedOutside()));
+
 		this.windowDisposables.add(addDisposableListener(targetWindow.document, EventType.KEY_DOWN, event => {
 			if (event.key === 'Escape') {
-				this.dropdownVisible = false;
-				this.windowDisposables.clear();
-				this.render();
+				this.closeDropdown();
 			}
 		}));
 	}
 
-	private async refresh(): Promise<void> {
+	private closeDropdown(): void {
+		this.dropdownVisible = false;
+		this.windowDisposables.clear();
+		this.render();
+	}
+
+	private closeDropdownIfFocusMovedOutside(event: FocusEvent): void {
+		const targetWindow = getWindow(this.container);
+		const relatedTarget = event.relatedTarget;
+		if (relatedTarget instanceof targetWindow.Node && !this.container.contains(relatedTarget)) {
+			this.closeDropdown();
+			return;
+		}
+
+		targetWindow.setTimeout(() => this.closeDropdownIfDocumentFocusMovedOutside(), 0);
+	}
+
+	private closeDropdownIfDocumentFocusMovedOutside(): void {
+		if (!this.dropdownVisible) {
+			return;
+		}
+
+		if (this.loading || this.pointerDownInsideDropdown) {
+			return;
+		}
+
+		if (!this.container.contains(getWindow(this.container).document.activeElement)) {
+			this.closeDropdown();
+		}
+	}
+
+	private refresh(options: { updateRemotes?: boolean } = {}): void {
+		if (this.refreshPromise) {
+			return;
+		}
+
 		this.loading = true;
 		this.problemMessage = undefined;
 		this.blockedCheckoutBranchName = undefined;
 		this.render();
 
+		this.refreshPromise = this.doRefresh(options)
+			.finally(() => {
+				this.refreshPromise = undefined;
+				this.loading = false;
+				this.render();
+				this.focusFilterInput();
+				this.scrollCurrentBranchIntoView();
+			});
+	}
+
+	private async doRefresh(options: { updateRemotes?: boolean }): Promise<void> {
 		try {
-			this.state = await this.commandService.executeCommand<DesignerBranchState>('_designerBranches.getState');
+			this.state = await this.commandService.executeCommand<DesignerBranchState>('_designerBranches.getState', { updateRemotes: options.updateRemotes === true });
 		} catch (error) {
 			this.problemMessage = getErrorMessage(error);
-		} finally {
-			this.loading = false;
-			this.render();
 		}
 	}
 
 	private render(): void {
 		this.renderDisposables.clear();
+		this.filterInput = undefined;
+		this.currentBranchRow = undefined;
 		this.button.replaceChildren();
 		this.dropdown.replaceChildren();
 		this.dropdown.hidden = !this.dropdownVisible;
@@ -169,11 +259,11 @@ export class DesignerBranchSwitcher extends Disposable {
 			return;
 		}
 
-		this.dropdown.append(this.renderTree(), this.renderNewBranch());
+		this.dropdown.append(this.renderFilter(), this.renderTree(), this.renderNewBranch());
 	}
 
 	private renderSyncIcon(): HTMLElement {
-		const syncState = this.problemMessage ? 'problem' : this.state?.syncState ?? 'syncing';
+		const syncState = this.problemMessage ? 'problem' : this.loading ? 'syncing' : this.state?.syncState ?? 'syncing';
 		const icon = document.createElement('span');
 		icon.classList.add('codicon', 'designer-branch-switcher__sync', `designer-branch-switcher__sync--${syncState}`);
 
@@ -233,16 +323,73 @@ export class DesignerBranchSwitcher extends Disposable {
 		const tree = $('.designer-branch-switcher__tree');
 		tree.setAttribute('role', 'menu');
 
-		if (!this.state?.tree.length) {
+		const filteredTree = this.getFilteredTree();
+
+		if (!filteredTree.length) {
 			tree.append($('.designer-branch-switcher__empty', undefined, localize('designerBranchSwitcherEmpty', "No branches found.")));
 			return tree;
 		}
 
-		for (const node of this.state.tree) {
+		for (const node of filteredTree) {
 			this.renderTreeNode(tree, node, 0);
 		}
 
 		return tree;
+	}
+
+	private renderFilter(): HTMLElement {
+		const wrapper = $('.designer-branch-switcher__filter');
+		wrapper.append($('span.codicon.codicon-search.designer-branch-switcher__filter-icon'));
+
+		const input = document.createElement('input');
+		input.className = 'designer-branch-switcher__filter-input';
+		input.type = 'text';
+		input.value = this.branchFilter;
+		input.placeholder = localize('designerBranchSwitcherFilterPlaceholder', "Search branches");
+		input.setAttribute('aria-label', localize('designerBranchSwitcherFilterAria', "Search branches"));
+		this.filterInput = input;
+
+		this.renderDisposables.add(addDisposableListener(input, EventType.INPUT, () => {
+			this.branchFilter = input.value;
+			this.render();
+			this.focusFilterInput();
+		}));
+
+		wrapper.append(input);
+		return wrapper;
+	}
+
+	private getFilteredTree(): readonly DesignerBranchTreeNode[] {
+		const query = this.branchFilter.trim().toLowerCase();
+		if (!query) {
+			return this.state?.tree ?? [];
+		}
+
+		return this.filterTree(this.state?.tree ?? [], query);
+	}
+
+	private filterTree(nodes: readonly DesignerBranchTreeNode[], query: string): DesignerBranchTreeNode[] {
+		const result: DesignerBranchTreeNode[] = [];
+
+		for (const node of nodes) {
+			const children = this.filterTree(node.children, query);
+			const branchMatches = node.branch ? this.branchMatchesFilter(node.branch, query) : false;
+			const folderMatches = node.name.toLowerCase().includes(query);
+
+			if (branchMatches || folderMatches || children.length > 0) {
+				result.push({
+					...node,
+					children: folderMatches ? node.children : children
+				});
+			}
+		}
+
+		return result;
+	}
+
+	private branchMatchesFilter(branch: DesignerBranchItem, query: string): boolean {
+		return branch.name.toLowerCase().includes(query) ||
+			branch.path.some(segment => segment.toLowerCase().includes(query));
 	}
 
 	private renderTreeNode(parent: HTMLElement, node: DesignerBranchTreeNode, depth: number): void {
@@ -281,6 +428,7 @@ export class DesignerBranchSwitcher extends Disposable {
 		if (branch.isCurrent) {
 			row.classList.add('designer-branch-switcher__row--current');
 			row.append($('span.codicon.codicon-check.designer-branch-switcher__row-check'));
+			this.currentBranchRow = row;
 		} else {
 			this.renderDisposables.add(addDisposableListener(row, EventType.CLICK, () => this.checkoutBranch(branch.name)));
 		}
@@ -303,32 +451,7 @@ export class DesignerBranchSwitcher extends Disposable {
 	}
 
 	private async checkoutBranch(branchName: string): Promise<void> {
-		this.loading = true;
-		this.problemMessage = undefined;
-		this.blockedCheckoutBranchName = undefined;
-		this.render();
-
-		try {
-			const result = await this.commandService.executeCommand<DesignerBranchCheckoutResult>('_designerBranches.checkout', { branchName });
-			if (!result) {
-				throw new Error(localize('designerBranchSwitcherCheckoutFailed', "Branch could not be switched."));
-			}
-
-			this.state = result.state;
-
-			if (result.blocked) {
-				this.problemMessage = result.blocked.message;
-				this.blockedCheckoutBranchName = branchName;
-			} else {
-				this.dropdownVisible = false;
-				this.windowDisposables.clear();
-			}
-		} catch (error) {
-			this.problemMessage = getErrorMessage(error);
-		} finally {
-			this.loading = false;
-			this.render();
-		}
+		return this.saveAndCheckoutBranch(branchName);
 	}
 
 	private async saveAndCheckoutBranch(branchName: string): Promise<void> {
@@ -382,6 +505,7 @@ export class DesignerBranchSwitcher extends Disposable {
 		const create = document.createElement('button');
 		create.className = 'designer-branch-switcher__create';
 		create.type = 'submit';
+		create.disabled = true;
 		create.append(
 			$('span.codicon.codicon-add'),
 			$('span', undefined, localize('designerBranchSwitcherCreateBranch', "Create"))
@@ -398,8 +522,18 @@ export class DesignerBranchSwitcher extends Disposable {
 			this.render();
 		}));
 
+		const updateCreateButtonState = () => {
+			create.disabled = !this.getBranchName(input.value);
+		};
+
+		this.renderDisposables.add(addDisposableListener(input, EventType.INPUT, updateCreateButtonState));
+		updateCreateButtonState();
+
 		this.renderDisposables.add(addDisposableListener(form, EventType.SUBMIT, event => {
 			event.preventDefault();
+			if (create.disabled) {
+				return;
+			}
 			this.createBranch(input.value);
 		}));
 
@@ -438,6 +572,10 @@ export class DesignerBranchSwitcher extends Disposable {
 			.replace(/\/+/g, '/')
 			.replace(/^-+|-+$/g, '')
 			.replace(/^\/+|\/+$/g, '');
+
+		if (!branchName) {
+			return '';
+		}
 
 		if (!this.useDesignPrefix) {
 			return branchName;

@@ -2814,8 +2814,12 @@ export class CommandCenter {
 	}
 
 	@command('_designerBranches.getState')
-	async getDesignerBranchesState(): Promise<DesignerBranchState> {
+	async getDesignerBranchesState(options?: { updateRemotes?: boolean }): Promise<DesignerBranchState> {
 		const repository = await this.pickDesignerRepository();
+		if (options?.updateRemotes) {
+			await this.updateDesignerBranchRefs(repository);
+		}
+
 		return this.getDesignerBranchesStateForRepository(repository);
 	}
 
@@ -2995,6 +2999,8 @@ export class CommandCenter {
 		} else {
 			throw new Error(l10n.t('No remote is configured for this project.'));
 		}
+
+		await this.updateDesignerBranchRefs(repository);
 	}
 
 	@command('_designerBranches.create')
@@ -3081,6 +3087,15 @@ export class CommandCenter {
 			branches,
 			tree: buildDesignerBranchTree(branches)
 		};
+	}
+
+	private async updateDesignerBranchRefs(repository: Repository): Promise<void> {
+		if (repository.getDefaultRemote()) {
+			await repository.fetchDefault({ silent: true });
+			return;
+		}
+
+		await repository.fetchAll({ silent: true });
 	}
 
 	private toDesignerBranchRefs(refs: readonly (Ref | Branch)[]): DesignerBranchRef[] {

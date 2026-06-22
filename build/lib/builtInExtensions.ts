@@ -21,6 +21,7 @@ export interface IExtensionDefinition {
 	sha256: string;
 	repo: string;
 	platforms?: string[];
+	targetPlatform?: string;
 	vsix?: string;
 	metadata: {
 		id: string;

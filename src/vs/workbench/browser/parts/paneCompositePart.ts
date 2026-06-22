@@ -109,7 +109,6 @@ export interface IPaneCompositePart extends IView {
 export abstract class AbstractPaneCompositePart extends CompositePart<PaneComposite> implements IPaneCompositePart {
 
 	private static readonly MIN_COMPOSITE_BAR_WIDTH = 50;
-	private static readonly CHAT_VIEW_CONTAINER_ID = 'workbench.panel.chat';
 
 	get snap(): boolean {
 		// Always allow snapping closed
@@ -211,7 +210,7 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 
 	private onDidOpen(composite: IComposite): void {
 		this.activePaneContextKey.set(composite.getId());
-		this.updateProjectToolbarPlaceholder(composite.getId());
+		this.updateProjectToolbarPlaceholder();
 	}
 
 	private onDidClose(composite: IComposite): void {
@@ -219,19 +218,19 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		if (this.activePaneContextKey.get() === id) {
 			this.activePaneContextKey.reset();
 		}
-		this.updateProjectToolbarPlaceholder(undefined);
+		this.updateProjectToolbarPlaceholder();
 	}
 
 	protected override showComposite(composite: Composite): void {
 		super.showComposite(composite);
 		this.layoutCompositeBar();
-		this.updateProjectToolbarPlaceholder(composite.getId());
+		this.updateProjectToolbarPlaceholder();
 		this.layoutEmptyMessage();
 	}
 
 	protected override hideActiveComposite(): Composite | undefined {
 		const composite = super.hideActiveComposite();
-		this.updateProjectToolbarPlaceholder(undefined);
+		this.updateProjectToolbarPlaceholder();
 		this.layoutCompositeBar();
 		this.layoutEmptyMessage();
 		return composite;
@@ -248,6 +247,7 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		}
 
 		this.updateCompositeBar();
+		this.updateProjectToolbarPlaceholder();
 
 		const focusTracker = this._register(trackFocus(parent));
 		this._register(focusTracker.onDidFocus(() => this.paneFocusContextKey.set(true)));
@@ -334,21 +334,23 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		}
 	}
 
-	private updateProjectToolbarPlaceholder(activeCompositeId: string | undefined): void {
-		const shouldShow = activeCompositeId === AbstractPaneCompositePart.CHAT_VIEW_CONTAINER_ID;
+	private updateProjectToolbarPlaceholder(): void {
+		const shouldShow = this.partId === Parts.AUXILIARYBAR_PART;
 		const compositeBarUsesTopHeader = this.shouldShowCompositeBar() && this.getCompositeBarPosition() === CompositeBarPosition.TOP;
 
-		if (!shouldShow || compositeBarUsesTopHeader) {
+		if (!shouldShow) {
 			if (this.projectToolbarElement) {
-				this.projectToolbarSwitcher.clear();
-				this.removeHeaderArea();
-				this.projectToolbarElement = undefined;
+				this.clearProjectToolbarPlaceholder();
 			}
 
 			return;
 		}
 
-		if (this.projectToolbarElement) {
+		if (this.projectToolbarElement && compositeBarUsesTopHeader && this.headerFooterCompositeBarContainer && this.projectToolbarElement.parentElement !== this.headerFooterCompositeBarContainer) {
+			this.clearProjectToolbarPlaceholder();
+		}
+
+		if (this.projectToolbarElement && (!compositeBarUsesTopHeader || this.projectToolbarElement.parentElement === this.headerFooterCompositeBarContainer)) {
 			return;
 		}
 
@@ -356,7 +358,29 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		this.projectToolbarElement.setAttribute('role', 'toolbar');
 		this.projectToolbarElement.setAttribute('aria-label', localize('projectToolbarPlaceholderAriaLabel', "Project switcher"));
 		this.projectToolbarSwitcher.value = this.instantiationService.createInstance(DesignerBranchSwitcher, this.projectToolbarElement);
-		this.setHeaderArea(this.projectToolbarElement);
+
+		if (compositeBarUsesTopHeader && this.headerFooterCompositeBarContainer) {
+			prepend(this.headerFooterCompositeBarContainer, this.projectToolbarElement);
+		} else {
+			this.setHeaderArea(this.projectToolbarElement);
+		}
+	}
+
+	private clearProjectToolbarPlaceholder(): void {
+		if (!this.projectToolbarElement) {
+			return;
+		}
+
+		const isStandaloneHeader = this.projectToolbarElement.classList.contains('header-or-footer');
+		this.projectToolbarSwitcher.clear();
+
+		if (isStandaloneHeader) {
+			this.removeHeaderArea();
+		} else {
+			this.projectToolbarElement.remove();
+		}
+
+		this.projectToolbarElement = undefined;
 	}
 
 	protected override createTitleArea(parent: HTMLElement): HTMLElement | undefined {
@@ -422,6 +446,10 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 
 		// Remove old composite bar
 		if (wasCompositeBarVisible) {
+			if (previousPosition === CompositeBarPosition.TOP && this.projectToolbarElement && !this.projectToolbarElement.classList.contains('header-or-footer')) {
+				this.clearProjectToolbarPlaceholder();
+			}
+
 			const previousCompositeBarContainer = previousPosition === CompositeBarPosition.TITLE ? this.titleContainer : this.headerFooterCompositeBarContainer;
 			if (!this.paneCompositeBarContainer || !this.paneCompositeBar.value || !previousCompositeBarContainer) {
 				throw new Error('Composite bar containers should exist when removing the previous composite bar');
@@ -442,6 +470,10 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 
 		// Create new composite bar
 		let newCompositeBarContainer;
+		if (newPosition === CompositeBarPosition.TOP && this.projectToolbarElement?.classList.contains('header-or-footer')) {
+			this.clearProjectToolbarPlaceholder();
+		}
+
 		switch (newPosition) {
 			case CompositeBarPosition.TOP: newCompositeBarContainer = this.createHeaderArea(); break;
 			case CompositeBarPosition.TITLE: newCompositeBarContainer = this.titleContainer; break;
@@ -470,6 +502,8 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		if (updateCompositeBarOption) {
 			this.layoutCompositeBar();
 		}
+
+		this.updateProjectToolbarPlaceholder();
 	}
 
 	protected override createHeaderArea(): HTMLElement {
