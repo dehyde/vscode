@@ -46,6 +46,7 @@ import { disposableTimeout } from '../../../../../base/common/async.js';
 import { MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { IsSessionsWindowContext, ResourceContextKey } from '../../../../common/contextkeys.js';
 import { Schemas } from '../../../../../base/common/network.js';
+import { extractLocalhostUrls } from '../../common/appPreviewUrl.js';
 
 const CONTEXT_BROWSER_EDITOR_OPEN = new RawContextKey<boolean>('browserEditorOpen', false, localize('browser.editorOpen', "Whether any browser editor is currently open"));
 
@@ -592,15 +593,12 @@ class LocalhostLinkOpenerContribution extends Disposable implements IWorkbenchCo
 	}
 
 	async openExternal(href: string, ctx: { sourceUri: URI; preferredOpenerId?: string }, _token: CancellationToken): Promise<boolean> {
-		if (!this.configurationService.getValue<boolean>('workbench.browser.openLocalhostLinks')) {
-			return false;
-		}
-
 		// If we are in a remote session, always use the original source URI (and not the href which may be the forwarded address)
 		if (this.browserViewWorkbenchService.willUseRemoteProxy() && ctx.sourceUri) {
 			href = ctx.sourceUri.toString();
 		}
 
+		let appPreviewHref: string | undefined;
 		try {
 			const parsed = new URL(href);
 			if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -609,7 +607,19 @@ class LocalhostLinkOpenerContribution extends Disposable implements IWorkbenchCo
 			if (!isLocalhostAuthority(parsed.host) && !isAllInterfacesAuthority(parsed.host)) {
 				return false;
 			}
+			[appPreviewHref] = extractLocalhostUrls(href);
 		} catch {
+			return false;
+		}
+
+		const appPreview = [...this.browserViewWorkbenchService.getKnownBrowserViews().values()].find(editor => editor.isSessionAppPreview && !editor.isDisposed());
+		if (appPreview) {
+			appPreview.navigate(appPreviewHref ?? href);
+			await this.editorService.openEditor(appPreview, { pinned: true, index: 0 });
+			return true;
+		}
+
+		if (!this.configurationService.getValue<boolean>('workbench.browser.openLocalhostLinks')) {
 			return false;
 		}
 
