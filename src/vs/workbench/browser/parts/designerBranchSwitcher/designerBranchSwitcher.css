@@ -195,6 +195,16 @@
 	cursor: default;
 }
 
+.designer-branch-switcher__row--switching {
+	background: var(--vscode-list-focusBackground);
+	color: var(--vscode-list-focusForeground);
+	cursor: progress;
+}
+
+.designer-branch-switcher__row:disabled {
+	cursor: default;
+}
+
 .designer-branch-switcher__row--remoteOnly {
 	opacity: 0.62;
 }

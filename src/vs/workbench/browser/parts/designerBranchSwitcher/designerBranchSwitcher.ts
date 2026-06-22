@@ -58,7 +58,9 @@ export class DesignerBranchSwitcher extends Disposable {
 	private problemMessage: string | undefined;
 	private blockedCheckoutBranchName: string | undefined;
 	private dropdownVisible = false;
-	private loading = false;
+	private refreshingBranches = false;
+	private switchingBranchName: string | undefined;
+	private treeRenderDeferred = false;
 	private refreshPromise: Promise<void> | undefined;
 	private useDesignPrefix = true;
 	private branchFilter = '';
@@ -98,6 +100,7 @@ export class DesignerBranchSwitcher extends Disposable {
 
 		if (this.dropdownVisible) {
 			this.branchFilter = '';
+			this.deferTreeRender();
 			this.installWindowListeners();
 			this.refresh({ updateRemotes: true });
 		} else {
@@ -107,6 +110,23 @@ export class DesignerBranchSwitcher extends Disposable {
 		this.render();
 		this.focusFilterInput();
 		this.scrollCurrentBranchIntoView();
+	}
+
+	private deferTreeRender(): void {
+		this.treeRenderDeferred = true;
+
+		const targetWindow = getWindow(this.container);
+		targetWindow.requestAnimationFrame(() => {
+			if (!this.dropdownVisible) {
+				this.treeRenderDeferred = false;
+				return;
+			}
+
+			this.treeRenderDeferred = false;
+			this.render();
+			this.focusFilterInput();
+			this.scrollCurrentBranchIntoView();
+		});
 	}
 
 	private focusFilterInput(): void {
@@ -184,7 +204,7 @@ export class DesignerBranchSwitcher extends Disposable {
 			return;
 		}
 
-		if (this.loading || this.pointerDownInsideDropdown) {
+		if (this.isBusy() || this.pointerDownInsideDropdown) {
 			return;
 		}
 
@@ -198,7 +218,7 @@ export class DesignerBranchSwitcher extends Disposable {
 			return;
 		}
 
-		this.loading = true;
+		this.refreshingBranches = true;
 		this.problemMessage = undefined;
 		this.blockedCheckoutBranchName = undefined;
 		this.render();
@@ -206,7 +226,7 @@ export class DesignerBranchSwitcher extends Disposable {
 		this.refreshPromise = this.doRefresh(options)
 			.finally(() => {
 				this.refreshPromise = undefined;
-				this.loading = false;
+				this.refreshingBranches = false;
 				this.render();
 				this.focusFilterInput();
 				this.scrollCurrentBranchIntoView();
@@ -231,7 +251,7 @@ export class DesignerBranchSwitcher extends Disposable {
 		this.button.setAttribute('aria-expanded', String(this.dropdownVisible));
 
 		const projectName = this.state?.projectName ?? localize('designerBranchSwitcherProjectFallback', "Project");
-		const branchName = this.state?.currentBranch ?? this.state?.defaultBranch ?? localize('designerBranchSwitcherNoBranch', "No branch");
+		const branchName = this.switchingBranchName ?? this.state?.currentBranch ?? this.state?.defaultBranch ?? localize('designerBranchSwitcherNoBranch', "No branch");
 
 		const label = $('.designer-branch-switcher__label');
 		label.append(
@@ -254,8 +274,12 @@ export class DesignerBranchSwitcher extends Disposable {
 			this.dropdown.append(this.renderProblem(this.problemMessage));
 		}
 
-		if (this.loading && !this.state) {
-			this.dropdown.append($('.designer-branch-switcher__empty', undefined, localize('designerBranchSwitcherLoading', "Loading branches...")));
+		if (this.refreshingBranches && !this.state) {
+			this.dropdown.append(
+				this.renderFilter(),
+				$('.designer-branch-switcher__empty', undefined, localize('designerBranchSwitcherLoading', "Loading branches...")),
+				this.renderNewBranch()
+			);
 			return;
 		}
 
@@ -263,7 +287,7 @@ export class DesignerBranchSwitcher extends Disposable {
 	}
 
 	private renderSyncIcon(): HTMLElement {
-		const syncState = this.problemMessage ? 'problem' : this.loading ? 'syncing' : this.state?.syncState ?? 'syncing';
+		const syncState = this.problemMessage ? 'problem' : this.isBusy() ? 'syncing' : this.state?.syncState ?? 'syncing';
 		const icon = document.createElement('span');
 		icon.classList.add('codicon', 'designer-branch-switcher__sync', `designer-branch-switcher__sync--${syncState}`);
 
@@ -276,7 +300,9 @@ export class DesignerBranchSwitcher extends Disposable {
 		}
 
 		const title = syncState === 'syncing'
-			? localize('designerBranchSwitcherSyncing', "Syncing")
+			? this.switchingBranchName
+				? localize('designerBranchSwitcherSwitching', "Switching branches")
+				: localize('designerBranchSwitcherSyncing', "Syncing")
 			: syncState === 'problem'
 				? localize('designerBranchSwitcherProblem', "Sync problem")
 				: localize('designerBranchSwitcherSynced', "Synced");
@@ -322,6 +348,11 @@ export class DesignerBranchSwitcher extends Disposable {
 	private renderTree(): HTMLElement {
 		const tree = $('.designer-branch-switcher__tree');
 		tree.setAttribute('role', 'menu');
+
+		if (this.treeRenderDeferred) {
+			tree.append($('.designer-branch-switcher__empty', undefined, localize('designerBranchSwitcherPreparingBranches', "Preparing branches...")));
+			return tree;
+		}
 
 		const filteredTree = this.getFilteredTree();
 
@@ -417,6 +448,7 @@ export class DesignerBranchSwitcher extends Disposable {
 		row.style.setProperty('--designer-branch-depth', String(depth));
 		row.setAttribute('role', 'menuitemradio');
 		row.setAttribute('aria-checked', String(branch.isCurrent));
+		row.disabled = !!this.switchingBranchName;
 
 		const displayName = branch.path[branch.path.length - 1] ?? branch.name;
 		row.append(
@@ -429,6 +461,9 @@ export class DesignerBranchSwitcher extends Disposable {
 			row.classList.add('designer-branch-switcher__row--current');
 			row.append($('span.codicon.codicon-check.designer-branch-switcher__row-check'));
 			this.currentBranchRow = row;
+		} else if (branch.name === this.switchingBranchName) {
+			row.classList.add('designer-branch-switcher__row--switching');
+			row.append($('span.codicon.codicon-sync.codicon-modifier-spin.designer-branch-switcher__row-check'));
 		} else {
 			this.renderDisposables.add(addDisposableListener(row, EventType.CLICK, () => this.checkoutBranch(branch.name)));
 		}
@@ -437,7 +472,9 @@ export class DesignerBranchSwitcher extends Disposable {
 	}
 
 	private renderBranchBadge(branch: DesignerBranchItem): HTMLElement {
-		const badgeText = branch.isDefault
+		const badgeText = branch.name === this.switchingBranchName
+			? localize('designerBranchSwitcherSwitchingBadge', "switching")
+			: branch.isDefault
 			? localize('designerBranchSwitcherDefaultBadge', "default")
 			: branch.status === 'remoteOnly'
 				? localize('designerBranchSwitcherRemoteBadge', "cloud")
@@ -455,7 +492,7 @@ export class DesignerBranchSwitcher extends Disposable {
 	}
 
 	private async saveAndCheckoutBranch(branchName: string): Promise<void> {
-		this.loading = true;
+		this.switchingBranchName = branchName;
 		this.problemMessage = undefined;
 		this.render();
 
@@ -479,7 +516,7 @@ export class DesignerBranchSwitcher extends Disposable {
 			this.problemMessage = getErrorMessage(error);
 			this.blockedCheckoutBranchName = branchName;
 		} finally {
-			this.loading = false;
+			this.switchingBranchName = undefined;
 			this.render();
 		}
 	}
@@ -548,7 +585,7 @@ export class DesignerBranchSwitcher extends Disposable {
 			return;
 		}
 
-		this.loading = true;
+		this.switchingBranchName = branchName;
 		this.problemMessage = undefined;
 		this.render();
 
@@ -559,9 +596,13 @@ export class DesignerBranchSwitcher extends Disposable {
 		} catch (error) {
 			this.problemMessage = getErrorMessage(error);
 		} finally {
-			this.loading = false;
+			this.switchingBranchName = undefined;
 			this.render();
 		}
+	}
+
+	private isBusy(): boolean {
+		return this.refreshingBranches || !!this.switchingBranchName;
 	}
 
 	private getBranchName(input: string): string {
