@@ -14,6 +14,7 @@ import { TestInstantiationService } from '../../../../../platform/instantiation/
 import { NullLogService, ILogService } from '../../../../../platform/log/common/log.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../../platform/workspace/common/workspace.js';
 import { BrowserEditorInput, IBeforeDisposeBrowserEditorEvent } from '../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
+import { extractLocalhostUrls } from '../../../../../workbench/contrib/browserView/common/appPreviewUrl.js';
 import { IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
@@ -22,7 +23,7 @@ import { IActiveSession } from '../../../../services/sessions/common/sessionsMan
 import { IChat, ISessionFolder, ISessionWorkspace, SessionStatus } from '../../../../services/sessions/common/session.js';
 import { ISessionsService } from '../../../../services/sessions/browser/sessionsService.js';
 import { ISessionsTasksService } from '../../../chat/browser/sessionsTasksService.js';
-import { extractLocalhostUrls, SessionAppPreviewController } from '../../browser/sessionAppPreview.js';
+import { SessionAppPreviewController } from '../../browser/sessionAppPreview.js';
 
 function tick(): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, 0));

@@ -5,11 +5,29 @@
 
 import './designerBranchSwitcher.css';
 import { $, addDisposableListener, EventType, getWindow } from '../../../../base/browser/dom.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
-import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IWorkspaceTrustManagementService, IWorkspaceTrustRequestService } from '../../../../platform/workspace/common/workspaceTrust.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+
+CommandsRegistry.registerCommand('_designerWorkspaceTrust.trustFolder', async (accessor, folderPath: string) => {
+	if (!folderPath) {
+		return;
+	}
+
+	const workspaceTrustManagementService = accessor.get(IWorkspaceTrustManagementService);
+	await workspaceTrustManagementService.setUrisTrust([URI.file(folderPath)], true);
+});
+
+const onDidChangeDesignerBranchStateEmitter = new Emitter<DesignerBranchState>();
+
+CommandsRegistry.registerCommand('_designerBranches.didChangeState', (_accessor, state: DesignerBranchState) => {
+	onDidChangeDesignerBranchStateEmitter.fire(state);
+});
 
 type DesignerBranchStatus = 'synced' | 'remoteOnly' | 'localOnly' | 'problem';
 
@@ -117,6 +135,7 @@ export class DesignerBranchSwitcher extends Disposable {
 	private activeSyncState: DesignerSyncState | undefined;
 	private removingRepoPath: string | undefined;
 	private cloningRepoUrl: string | undefined;
+	private projectAccessLimited = false;
 	private treeRenderDeferred = false;
 	private refreshPromise: Promise<void> | undefined;
 	private repoRefreshPromise: Promise<void> | undefined;
@@ -129,7 +148,8 @@ export class DesignerBranchSwitcher extends Disposable {
 	constructor(
 		parent: HTMLElement,
 		@ICommandService private readonly commandService: ICommandService,
-		@IDialogService private readonly dialogService: IDialogService
+		@IDialogService private readonly dialogService: IDialogService,
+		@IWorkspaceTrustRequestService private readonly workspaceTrustRequestService: IWorkspaceTrustRequestService
 	) {
 		super();
 
@@ -153,6 +173,7 @@ export class DesignerBranchSwitcher extends Disposable {
 		this._register(addDisposableListener(this.repoButton, EventType.CLICK, () => this.toggleRepoDropdown()));
 		this._register(addDisposableListener(this.branchButton, EventType.CLICK, () => this.toggleBranchDropdown()));
 		this._register(toDisposable(() => this.clearStartupRefreshRetry()));
+		this._register(onDidChangeDesignerBranchStateEmitter.event(state => this.updateBranchState(state)));
 
 		this.render();
 		this.refresh({ retryDuringStartup: true });
@@ -285,7 +306,7 @@ export class DesignerBranchSwitcher extends Disposable {
 
 		this.refreshPromise = this.doRefresh(options)
 			.catch(error => {
-				this.problemMessage = getErrorMessage(error);
+				this.problemMessage = this.getRefreshProblemMessage(error);
 				this.scheduleStartupRefreshRetry(options);
 			})
 			.finally(() => {
@@ -308,7 +329,7 @@ export class DesignerBranchSwitcher extends Disposable {
 
 		this.repoRefreshPromise = this.doRefreshRepos()
 			.catch(error => {
-				this.repoProblemMessage = getErrorMessage(error);
+				this.repoProblemMessage = this.getRefreshProblemMessage(error);
 			})
 			.finally(() => {
 				this.repoRefreshPromise = undefined;
@@ -320,16 +341,27 @@ export class DesignerBranchSwitcher extends Disposable {
 
 	private async doRefreshRepos(): Promise<void> {
 		this.repoState = await this.commandService.executeCommand<DesignerRepoState>('_designerRepos.getState');
+		this.projectAccessLimited = false;
 	}
 
 	private async doRefresh(options: { updateRemotes?: boolean; retryDuringStartup?: boolean }): Promise<void> {
 		this.state = await this.commandService.executeCommand<DesignerBranchState>('_designerBranches.getState', { updateRemotes: options.updateRemotes === true });
+		this.projectAccessLimited = false;
 		if (this.state?.repositoryReady === false) {
 			this.scheduleStartupRefreshRetry(options);
 			return;
 		}
 
 		this.startupRefreshAttempts = 0;
+	}
+
+	private updateBranchState(state: DesignerBranchState): void {
+		this.state = state;
+		this.projectAccessLimited = false;
+		this.problemMessage = undefined;
+		this.startupRefreshAttempts = 0;
+		this.clearStartupRefreshRetry();
+		this.render();
 	}
 
 	private scheduleStartupRefreshRetry(options: { updateRemotes?: boolean; retryDuringStartup?: boolean }): void {
@@ -463,7 +495,17 @@ export class DesignerBranchSwitcher extends Disposable {
 			$('span.designer-branch-switcher__problem-message', undefined, message)
 		);
 
-		if (this.blockedCheckoutBranchName || this.blockedRepoPath) {
+		if (this.projectAccessLimited) {
+			const actions = $('.designer-branch-switcher__problem-actions');
+			const allow = document.createElement('button');
+			allow.className = 'designer-branch-switcher__problem-action designer-branch-switcher__problem-action--trust';
+			allow.type = 'button';
+			allow.textContent = localize('designerBranchSwitcherAllowProject', "Allow this project");
+
+			this.renderDisposables.add(addDisposableListener(allow, EventType.CLICK, () => this.allowProjectAccess()));
+			actions.append(allow);
+			problem.append(actions);
+		} else if (this.blockedCheckoutBranchName || this.blockedRepoPath) {
 			const actions = $('.designer-branch-switcher__problem-actions');
 			const retry = document.createElement('button');
 			retry.className = 'designer-branch-switcher__problem-action designer-branch-switcher__problem-action--retry';
@@ -516,6 +558,36 @@ export class DesignerBranchSwitcher extends Disposable {
 		}
 
 		return problem;
+	}
+
+	private getRefreshProblemMessage(error: unknown): string {
+		const message = getErrorMessage(error);
+		if (this.isDesignerCommandUnavailable(message)) {
+			this.projectAccessLimited = true;
+			return localize('designerBranchSwitcherAccessLimited', "Project access is limited. Allow this project to load repos and branches.");
+		}
+
+		return message;
+	}
+
+	private isDesignerCommandUnavailable(message: string): boolean {
+		return /_designer(?:Branches|Repos)\./.test(message) && /not found|not registered|unknown command/i.test(message);
+	}
+
+	private async allowProjectAccess(): Promise<void> {
+		const trusted = await this.workspaceTrustRequestService.requestWorkspaceTrust({
+			message: localize('designerBranchSwitcherTrustRequest', "Allow this project so branches, saving, and project switching can work.")
+		});
+
+		if (!trusted) {
+			return;
+		}
+
+		this.projectAccessLimited = false;
+		this.problemMessage = undefined;
+		this.repoProblemMessage = undefined;
+		this.refresh({ retryDuringStartup: true });
+		this.refreshRepos();
 	}
 
 	private renderTree(): HTMLElement {

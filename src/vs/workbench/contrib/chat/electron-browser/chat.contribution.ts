@@ -10,10 +10,12 @@ import { autorun } from '../../../../base/common/observable.js';
 import { resolve } from '../../../../base/common/path.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ipcRenderer } from '../../../../base/parts/sandbox/electron-browser/globals.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
+import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ILocalGitService } from '../../../../platform/git/common/localGitService.js';
@@ -58,6 +60,9 @@ import { NativePluginGitCommandService } from './pluginGitCommandService.js';
 // `IPluginGitService` interface for the full per-flavor wiring.
 registerSingleton(IPluginGitService, NativePluginGitCommandService, InstantiationType.Delayed);
 registerSharedProcessRemoteService(ILocalGitService, 'localGit');
+
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration)
+	.registerDefaultConfigurations([{ overrides: { 'claudeCode.preferredLocation': 'sidebar' } }]);
 
 class ChatCommandLineHandler extends Disposable {
 
@@ -239,6 +244,8 @@ class ClaudeCodeDefaultExperienceContribution extends Disposable {
 
 	private static readonly claudeSidebarCommand = 'claude-vscode.sidebar.open';
 	private static readonly claudeSecondarySidebarContainer = 'claude-sidebar-secondary';
+	private static readonly openRetryCount = 20;
+	private static readonly openRetryDelayMs = 250;
 
 	constructor(
 		@IExtensionService private readonly extensionService: IExtensionService,
@@ -253,12 +260,16 @@ class ClaudeCodeDefaultExperienceContribution extends Disposable {
 
 	private async openClaudeCodeByDefault(): Promise<void> {
 		await this.extensionService.whenInstalledExtensionsRegistered();
+		await this.extensionService.activateByEvent('onStartupFinished');
 
-		try {
-			await this.commandService.executeCommand(ClaudeCodeDefaultExperienceContribution.claudeSidebarCommand);
-			return;
-		} catch (error) {
-			this.logService.trace('Claude Code sidebar command is unavailable, opening contributed container instead', error);
+		for (let attempt = 0; attempt < ClaudeCodeDefaultExperienceContribution.openRetryCount; attempt++) {
+			try {
+				await this.commandService.executeCommand(ClaudeCodeDefaultExperienceContribution.claudeSidebarCommand);
+				return;
+			} catch (error) {
+				this.logService.trace(`Claude Code sidebar command is unavailable, retrying (${attempt + 1}/${ClaudeCodeDefaultExperienceContribution.openRetryCount})`, error);
+				await timeout(ClaudeCodeDefaultExperienceContribution.openRetryDelayMs);
+			}
 		}
 
 		await this.paneCompositeService.openPaneComposite(ClaudeCodeDefaultExperienceContribution.claudeSecondarySidebarContainer, ViewContainerLocation.AuxiliaryBar, false);

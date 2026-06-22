@@ -7,12 +7,17 @@ import assert from 'assert';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { timeout } from '../../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ICommandEvent, ICommandService } from '../../../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommandEvent, ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
+import { IWorkspaceTrustRequestService, WorkspaceTrustRequestOptions, WorkspaceTrustUriResponse } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { DesignerBranchSwitcher } from '../../../../browser/parts/designerBranchSwitcher/designerBranchSwitcher.js';
 
 suite('DesignerBranchSwitcher', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	function createSwitcher(parent: HTMLElement, commandService: ICommandService, dialogService = new TestDialogService(), trustService: IWorkspaceTrustRequestService = new StaticWorkspaceTrustRequestService(true)): DesignerBranchSwitcher {
+		return new DesignerBranchSwitcher(parent, commandService, dialogService, trustService);
+	}
 
 	test('updates from fallback branch label after startup branch state becomes available', async () => {
 		const parent = document.createElement('div');
@@ -20,7 +25,7 @@ suite('DesignerBranchSwitcher', () => {
 		document.body.appendChild(parent);
 
 		const commandService = new RetryingBranchCommandService();
-		disposables.add(new DesignerBranchSwitcher(parent, commandService, new TestDialogService()));
+		disposables.add(createSwitcher(parent, commandService));
 
 		assert.strictEqual(parent.querySelector('.designer-branch-switcher__project')?.textContent, 'Project');
 		assert.strictEqual(parent.querySelector('.designer-branch-switcher__branch')?.textContent, 'No branch');
@@ -38,7 +43,7 @@ suite('DesignerBranchSwitcher', () => {
 		document.body.appendChild(parent);
 
 		const commandService = new LoadingRepositoryCommandService();
-		disposables.add(new DesignerBranchSwitcher(parent, commandService, new TestDialogService()));
+		disposables.add(createSwitcher(parent, commandService));
 
 		await timeout(0);
 
@@ -58,12 +63,38 @@ suite('DesignerBranchSwitcher', () => {
 		disposables.add({ dispose: () => parent.remove() });
 		document.body.appendChild(parent);
 
-		disposables.add(new DesignerBranchSwitcher(parent, new DesignerSwitcherCommandService(), new TestDialogService()));
+		disposables.add(createSwitcher(parent, new DesignerSwitcherCommandService()));
 
 		await timeout(0);
 
 		assert.strictEqual(parent.querySelector('.designer-branch-switcher__repo-button')?.textContent?.trim(), 'VSCode Fork');
 		assert.strictEqual(parent.querySelector('.designer-branch-switcher__branch-button')?.textContent?.trim(), 'design/test1');
+	});
+
+	test('updates branch control from live git branch state', async () => {
+		const parent = document.createElement('div');
+		disposables.add({ dispose: () => parent.remove() });
+		document.body.appendChild(parent);
+
+		disposables.add(createSwitcher(parent, new DesignerSwitcherCommandService()));
+
+		await timeout(0);
+
+		assert.strictEqual(parent.querySelector('.designer-branch-switcher__branch-button')?.textContent?.includes('design/test1'), true);
+
+		CommandsRegistry.getCommand('_designerBranches.didChangeState')?.handler(undefined!, {
+			projectName: 'VSCode Fork',
+			defaultBranch: 'main',
+			currentBranch: 'design/live-update',
+			syncState: 'synced',
+			repositoryReady: true,
+			branches: [],
+			tree: []
+		});
+
+		await timeout(0);
+
+		assert.strictEqual(parent.querySelector('.designer-branch-switcher__branch-button')?.textContent?.includes('design/live-update'), true);
 	});
 
 	test('sizes repo control to its content instead of a fixed share', async () => {
@@ -74,7 +105,7 @@ suite('DesignerBranchSwitcher', () => {
 		disposables.add({ dispose: () => parent.remove() });
 		document.body.appendChild(parent);
 
-		disposables.add(new DesignerBranchSwitcher(parent, new DesignerSwitcherCommandService(), new TestDialogService()));
+		disposables.add(createSwitcher(parent, new DesignerSwitcherCommandService()));
 
 		await timeout(0);
 
@@ -92,7 +123,7 @@ suite('DesignerBranchSwitcher', () => {
 		disposables.add({ dispose: () => parent.remove() });
 		document.body.appendChild(parent);
 
-		disposables.add(new DesignerBranchSwitcher(parent, new DesignerSwitcherCommandService(), new TestDialogService()));
+		disposables.add(createSwitcher(parent, new DesignerSwitcherCommandService()));
 
 		await timeout(0);
 		(parent.querySelector('.designer-branch-switcher__branch-button') as HTMLButtonElement).click();
@@ -107,7 +138,7 @@ suite('DesignerBranchSwitcher', () => {
 		disposables.add({ dispose: () => parent.remove() });
 		document.body.appendChild(parent);
 
-		disposables.add(new DesignerBranchSwitcher(parent, new DesignerSwitcherCommandService(), new TestDialogService()));
+		disposables.add(createSwitcher(parent, new DesignerSwitcherCommandService()));
 
 		await timeout(0);
 		const branchButton = parent.querySelector('.designer-branch-switcher__branch-button') as HTMLButtonElement;
@@ -126,7 +157,7 @@ suite('DesignerBranchSwitcher', () => {
 		disposables.add({ dispose: () => parent.remove() });
 		document.body.appendChild(parent);
 
-		disposables.add(new DesignerBranchSwitcher(parent, new DesignerSwitcherCommandService(), new TestDialogService()));
+		disposables.add(createSwitcher(parent, new DesignerSwitcherCommandService()));
 
 		await timeout(0);
 		(parent.querySelector('.designer-branch-switcher__repo-button') as HTMLButtonElement).click();
@@ -143,7 +174,7 @@ suite('DesignerBranchSwitcher', () => {
 		document.body.appendChild(parent);
 
 		const commandService = new SlowBranchSwitchCommandService();
-		disposables.add(new DesignerBranchSwitcher(parent, commandService, new TestDialogService()));
+		disposables.add(createSwitcher(parent, commandService));
 
 		await timeout(0);
 		(parent.querySelector('.designer-branch-switcher__branch-button') as HTMLButtonElement).click();
@@ -166,7 +197,7 @@ suite('DesignerBranchSwitcher', () => {
 		disposables.add({ dispose: () => parent.remove() });
 		document.body.appendChild(parent);
 
-		disposables.add(new DesignerBranchSwitcher(parent, new BlockedBranchSwitchCommandService(), new TestDialogService()));
+		disposables.add(createSwitcher(parent, new BlockedBranchSwitchCommandService()));
 
 		await timeout(0);
 		(parent.querySelector('.designer-branch-switcher__branch-button') as HTMLButtonElement).click();
@@ -190,7 +221,7 @@ suite('DesignerBranchSwitcher', () => {
 		document.body.appendChild(parent);
 
 		const commandService = new BlockedBranchSwitchCommandService();
-		disposables.add(new DesignerBranchSwitcher(parent, commandService, new TestDialogService()));
+		disposables.add(createSwitcher(parent, commandService));
 
 		await timeout(0);
 		(parent.querySelector('.designer-branch-switcher__branch-button') as HTMLButtonElement).click();
@@ -215,7 +246,7 @@ suite('DesignerBranchSwitcher', () => {
 		document.body.appendChild(parent);
 
 		const commandService = new SlowRepoSwitchCommandService();
-		disposables.add(new DesignerBranchSwitcher(parent, commandService, new TestDialogService()));
+		disposables.add(createSwitcher(parent, commandService));
 
 		await timeout(0);
 		(parent.querySelector('.designer-branch-switcher__repo-button') as HTMLButtonElement).click();
@@ -239,7 +270,7 @@ suite('DesignerBranchSwitcher', () => {
 		document.body.appendChild(parent);
 
 		const commandService = new DesignerSwitcherCommandService();
-		disposables.add(new DesignerBranchSwitcher(parent, commandService, new TestDialogService()));
+		disposables.add(createSwitcher(parent, commandService));
 
 		await timeout(0);
 		(parent.querySelector('.designer-branch-switcher__repo-button') as HTMLButtonElement).click();
@@ -260,7 +291,7 @@ suite('DesignerBranchSwitcher', () => {
 		disposables.add({ dispose: () => parent.remove() });
 		document.body.appendChild(parent);
 
-		disposables.add(new DesignerBranchSwitcher(parent, new ReplacingCloneRepoCommandService(), new TestDialogService()));
+		disposables.add(createSwitcher(parent, new ReplacingCloneRepoCommandService()));
 
 		await timeout(0);
 		(parent.querySelector('.designer-branch-switcher__repo-button') as HTMLButtonElement).click();
@@ -284,7 +315,7 @@ suite('DesignerBranchSwitcher', () => {
 		document.body.appendChild(parent);
 
 		const commandService = new RemovableRepoCommandService();
-		disposables.add(new DesignerBranchSwitcher(parent, commandService, new TestDialogService()));
+		disposables.add(createSwitcher(parent, commandService));
 
 		await timeout(0);
 		(parent.querySelector('.designer-branch-switcher__repo-button') as HTMLButtonElement).click();
@@ -305,7 +336,7 @@ suite('DesignerBranchSwitcher', () => {
 
 		const commandService = new RemovableRepoCommandService();
 		const dialogService = new TestDialogService(undefined, { result: 'delete' });
-		disposables.add(new DesignerBranchSwitcher(parent, commandService, dialogService));
+		disposables.add(createSwitcher(parent, commandService, dialogService));
 
 		await timeout(0);
 		(parent.querySelector('.designer-branch-switcher__repo-button') as HTMLButtonElement).click();
@@ -315,6 +346,30 @@ suite('DesignerBranchSwitcher', () => {
 		await timeout(10);
 
 		assert.deepStrictEqual(commandService.removeRequests, [{ repoPath: '/workspace/old-repo', deleteLocalFiles: true }]);
+	});
+
+	test('shows project access action when designer git commands are unavailable', async () => {
+		const parent = document.createElement('div');
+		disposables.add({ dispose: () => parent.remove() });
+		document.body.appendChild(parent);
+
+		const commandService = new RestrictedModeCommandService();
+		const trustService = new RecordingWorkspaceTrustRequestService(() => commandService.trusted = true);
+		disposables.add(createSwitcher(parent, commandService, new TestDialogService(), trustService));
+
+		await timeout(0);
+		(parent.querySelector('.designer-branch-switcher__branch-button') as HTMLButtonElement).click();
+		await timeout(20);
+
+		assert.strictEqual(parent.querySelector('.designer-branch-switcher__problem')?.textContent?.includes('Project access is limited'), true);
+		assert.strictEqual(parent.querySelector('.designer-branch-switcher__problem-action--trust')?.textContent, 'Allow this project');
+
+		(parent.querySelector('.designer-branch-switcher__problem-action--trust') as HTMLButtonElement).click();
+		await timeout(20);
+
+		assert.strictEqual(trustService.requests, 1);
+		assert.strictEqual(parent.querySelector('.designer-branch-switcher__branch-button')?.textContent?.includes('design/test1'), true);
+		assert.strictEqual(parent.querySelector('.designer-branch-switcher__problem'), null);
 	});
 });
 
@@ -645,5 +700,66 @@ class RemovableRepoCommandService extends DesignerSwitcherCommandService {
 		}
 
 		return super.executeCommand(commandId, ...args);
+	}
+}
+
+class RestrictedModeCommandService extends DesignerSwitcherCommandService {
+
+	trusted = false;
+
+	override async executeCommand<T>(commandId: string, ...args: unknown[]): Promise<T | undefined> {
+		if (!this.trusted && (commandId === '_designerBranches.getState' || commandId === '_designerRepos.getState')) {
+			throw new Error(`command '${commandId}' not found`);
+		}
+
+		return super.executeCommand(commandId, ...args);
+	}
+}
+
+class StaticWorkspaceTrustRequestService implements IWorkspaceTrustRequestService {
+	declare readonly _serviceBrand: undefined;
+
+	readonly onDidInitiateOpenFilesTrustRequest = Event.None;
+	readonly onDidInitiateResourcesTrustRequest = Event.None;
+	readonly onDidInitiateWorkspaceTrustRequest = Event.None;
+	readonly onDidInitiateWorkspaceTrustRequestOnStartup = Event.None;
+
+	constructor(private readonly trusted: boolean) { }
+
+	async requestOpenFilesTrust(): Promise<WorkspaceTrustUriResponse> {
+		return WorkspaceTrustUriResponse.Open;
+	}
+
+	async completeOpenFilesTrustRequest(): Promise<void> { }
+
+	async completeResourcesTrustRequest(): Promise<void> { }
+
+	async requestResourcesTrust(): Promise<boolean | undefined> {
+		return this.trusted;
+	}
+
+	cancelWorkspaceTrustRequest(): void { }
+
+	async completeWorkspaceTrustRequest(): Promise<void> { }
+
+	async requestWorkspaceTrust(): Promise<boolean | undefined> {
+		return this.trusted;
+	}
+
+	requestWorkspaceTrustOnStartup(): void { }
+}
+
+class RecordingWorkspaceTrustRequestService extends StaticWorkspaceTrustRequestService {
+
+	requests = 0;
+
+	constructor(private readonly onRequest: () => void) {
+		super(false);
+	}
+
+	override async requestWorkspaceTrust(options?: WorkspaceTrustRequestOptions): Promise<boolean> {
+		this.requests++;
+		this.onRequest();
+		return true;
 	}
 }

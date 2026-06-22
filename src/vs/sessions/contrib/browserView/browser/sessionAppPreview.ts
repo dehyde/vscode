@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { isAllInterfacesAuthority, isLocalhostAuthority } from '../../../../platform/url/common/trustedDomains.js';
 import { hash } from '../../../../base/common/hash.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { autorun, IReader } from '../../../../base/common/observable.js';
@@ -17,52 +16,17 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
+import { extractLocalhostUrls } from '../../../../workbench/contrib/browserView/common/appPreviewUrl.js';
 import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ISessionsService } from '../../../services/sessions/browser/sessionsService.js';
 import { ISession } from '../../../services/sessions/common/session.js';
 import { ISessionsTasksService } from '../../chat/browser/sessionsTasksService.js';
 
-const URL_PATTERN = /https?:\/\/(?:\[[^\]\s]+\]|[^\s/:]+)(?::\d+)?(?:\/[^\s]*)?/gi;
 const PREVIEW_ID_PREFIX = 'session-app-preview-';
 const WORKSPACE_PREVIEW_ID_PREFIX = 'session-app-preview-workspace-';
 
 export const ConfigureSessionAppPreviewUrlCommandId = 'workbench.action.agentSessions.configureAppPreviewUrl';
-
-export function extractLocalhostUrls(text: string): string[] {
-	const urls: string[] = [];
-	for (const match of text.matchAll(URL_PATTERN)) {
-		const normalized = normalizeLocalhostUrl(match[0]);
-		if (normalized) {
-			urls.push(normalized);
-		}
-	}
-	return urls;
-}
-
-function normalizeLocalhostUrl(value: string): string | undefined {
-	let url: URL;
-	try {
-		url = new URL(value);
-	} catch {
-		return undefined;
-	}
-
-	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-		return undefined;
-	}
-
-	if (isAllInterfacesAuthority(url.host)) {
-		url.hostname = 'localhost';
-		return url.href;
-	}
-
-	if (!isLocalhostAuthority(url.host)) {
-		return undefined;
-	}
-
-	return url.href;
-}
 
 function getSessionKey(session: ISession): string {
 	return session.resource.toString();

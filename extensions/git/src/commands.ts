@@ -818,6 +818,7 @@ export class CommandCenter {
 		});
 
 		this.disposables.push(workspace.registerTextDocumentContentProvider('git-output', this.commandErrors));
+		this.disposables.push(this.installDesignerBranchStateBroadcaster());
 	}
 
 	@command('git.showOutput')
@@ -3325,6 +3326,7 @@ export class CommandCenter {
 			name: getRepositoryLabel(repoPath)
 		});
 
+		await commands.executeCommand('_designerWorkspaceTrust.trustFolder', repoPath);
 		await commands.executeCommand('vscode.openFolder', Uri.file(repoPath), { forceReuseWindow: true });
 		return {
 			state: await this.getDesignerReposStateInternal(),
@@ -3585,6 +3587,10 @@ export class CommandCenter {
 	private async getDesignerBranchesStateForRepository(repository: Repository): Promise<DesignerBranchState> {
 		await repository.status();
 		const refs = await repository.getRefs({});
+		return this.getDesignerBranchesSnapshotForRepository(repository, refs);
+	}
+
+	private getDesignerBranchesSnapshotForRepository(repository: Repository, refs = repository.refs): DesignerBranchState {
 		const defaultRemote = repository.getDefaultRemote();
 		const branchRefs = this.toDesignerBranchRefs(refs);
 		const defaultBranch = this.getDesignerDefaultBranch(refs, defaultRemote?.name, repository.HEAD?.name);
@@ -3599,6 +3605,50 @@ export class CommandCenter {
 			branches,
 			tree: buildDesignerBranchTree(branches)
 		};
+	}
+
+	private installDesignerBranchStateBroadcaster(): Disposable {
+		const disposables: Disposable[] = [];
+		const repositoryDisposables = new Map<Repository, Disposable>();
+
+		const publish = (repository: Repository): void => {
+			if (repository !== this.getDesignerWorkspaceRepository()) {
+				return;
+			}
+
+			commands.executeCommand('_designerBranches.didChangeState', this.getDesignerBranchesSnapshotForRepository(repository))
+				.then(undefined, error => this.logger.trace(`[DesignerBranches] Failed to publish branch state: ${getDesignerErrorMessage(error)}`));
+		};
+
+		const addRepository = (repository: Repository): void => {
+			if (repositoryDisposables.has(repository)) {
+				return;
+			}
+
+			const repositoryDisposable = repository.onDidRunGitStatus(() => publish(repository));
+			repositoryDisposables.set(repository, repositoryDisposable);
+			publish(repository);
+		};
+
+		const removeRepository = (repository: Repository): void => {
+			repositoryDisposables.get(repository)?.dispose();
+			repositoryDisposables.delete(repository);
+		};
+
+		for (const repository of this.model.repositories) {
+			addRepository(repository);
+		}
+
+		disposables.push(this.model.onDidOpenRepository(addRepository));
+		disposables.push(this.model.onDidCloseRepository(removeRepository));
+
+		return new Disposable(() => {
+			for (const disposable of repositoryDisposables.values()) {
+				disposable.dispose();
+			}
+
+			dispose(disposables);
+		});
 	}
 
 	private async updateDesignerBranchRefs(repository: Repository): Promise<void> {
