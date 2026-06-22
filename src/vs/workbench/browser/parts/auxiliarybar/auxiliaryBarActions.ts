@@ -281,11 +281,6 @@ class ToggleMaximizedAuxiliaryBar extends Action2 {
 			toggled: {
 				condition: AuxiliaryBarMaximizedContext,
 				tooltip: localize('restoreAuxiliaryBar', 'Restore Secondary Side Bar'),
-			},
-			menu: {
-				id: MenuId.AuxiliaryBarTitle,
-				group: 'navigation',
-				order: 1,
 			}
 		});
 	}

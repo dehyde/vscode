@@ -153,6 +153,10 @@ export class BrowserEditorInput extends EditorInput {
 		return !!this._initialData.isDefaultLinkOpen;
 	}
 
+	get isSessionAppPreview(): boolean {
+		return !!this._initialData.isSessionAppPreview;
+	}
+
 	get isSharingAvailable(): boolean {
 		return this._model ? this._model.sharingState !== BrowserViewSharingState.Unavailable : this.browserViewWorkbenchService.isSharingAvailable;
 	}
@@ -165,7 +169,8 @@ export class BrowserEditorInput extends EditorInput {
 			// If the model isn't created yet, update the initial data so that the URL is correct when the model is created
 			this._initialData = {
 				id: this._id,
-				url: destination
+				url: destination,
+				isSessionAppPreview: this._initialData.isSessionAppPreview
 			};
 			this._onDidChangeLabel.fire();
 		}
@@ -314,7 +319,8 @@ export class BrowserEditorInput extends EditorInput {
 		const viewState: IBrowserEditorViewState = {
 			url: this.url,
 			title: this.title,
-			favicon: this.favicon
+			favicon: this.favicon,
+			isSessionAppPreview: this.isSessionAppPreview
 		};
 		return {
 			resource: this.resource,
@@ -341,7 +347,8 @@ export class BrowserEditorInput extends EditorInput {
 				id: this._id,
 				url: this._model.url,
 				title: this._model.title,
-				favicon: this._model.favicon
+				favicon: this._model.favicon,
+				isSessionAppPreview: this.isSessionAppPreview
 			};
 			this._model.dispose();
 			this._model = undefined;
@@ -353,7 +360,8 @@ export class BrowserEditorInput extends EditorInput {
 			id: this._id,
 			url: this.url,
 			title: this.title,
-			favicon: this.favicon
+			favicon: this.favicon,
+			isSessionAppPreview: this.isSessionAppPreview
 		};
 	}
 }

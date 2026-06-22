@@ -8,6 +8,7 @@ import { $ } from '../../../../../base/browser/dom.js';
 import { renderIcon } from '../../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 import { ChatContextKeys } from '../../../chat/common/actions/chatContextKeys.js';
 import { IBrowserViewModel } from '../../common/browserView.js';
@@ -26,11 +27,16 @@ import {
 export class BrowserWelcomeFeature extends BrowserEditorContribution {
 
 	private readonly _container: HTMLElement;
+	private readonly _title: HTMLElement;
+	private readonly _subtitle: HTMLElement;
+	private readonly _configureButton: HTMLButtonElement;
+	private readonly _defaultSubtitle: string;
 	private readonly _widget: IBrowserEditorWidget;
 
 	constructor(
 		editor: BrowserEditor,
 		@IContextKeyService contextKeyService: IContextKeyService,
+		@ICommandService private readonly commandService: ICommandService,
 	) {
 		super(editor);
 
@@ -41,16 +47,25 @@ export class BrowserWelcomeFeature extends BrowserEditorContribution {
 		iconContainer.appendChild(renderIcon(Codicon.globe));
 		content.appendChild(iconContainer);
 
-		const title = $('.browser-welcome-title');
-		title.textContent = localize('browser.welcomeTitle', "Browser");
-		content.appendChild(title);
+		this._title = $('.browser-welcome-title');
+		this._title.textContent = localize('browser.welcomeTitle', "Browser");
+		content.appendChild(this._title);
 
-		const subtitle = $('.browser-welcome-subtitle');
+		this._subtitle = $('.browser-welcome-subtitle');
 		const chatEnabled = contextKeyService.getContextKeyValue<boolean>(ChatContextKeys.enabled.key);
-		subtitle.textContent = chatEnabled
+		this._defaultSubtitle = chatEnabled
 			? localize('browser.welcomeSubtitleChat', "Use Add Element to Chat to reference UI elements in chat prompts.")
 			: localize('browser.welcomeSubtitle', "Enter a URL above to get started.");
-		content.appendChild(subtitle);
+		this._subtitle.textContent = this._defaultSubtitle;
+		content.appendChild(this._subtitle);
+
+		this._configureButton = document.createElement('button');
+		this._configureButton.className = 'browser-welcome-configure-button';
+		this._configureButton.textContent = localize('browser.configureAppPreviewUrl', "Configure URL");
+		this._configureButton.addEventListener('click', () => {
+			void this.commandService.executeCommand('workbench.action.agentSessions.configureAppPreviewUrl');
+		});
+		content.appendChild(this._configureButton);
 
 		this._container.appendChild(content);
 
@@ -62,19 +77,29 @@ export class BrowserWelcomeFeature extends BrowserEditorContribution {
 	}
 
 	override prerenderInput(input: BrowserEditorInput): void {
-		this._setVisible(!input.url);
+		this._update(input.isSessionAppPreview, !input.url);
 	}
 
 	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore): void {
-		this._setVisible(!model.url);
-		store.add(model.onDidNavigate(event => this._setVisible(!event.url)));
+		const isSessionAppPreview = this.editor.input instanceof BrowserEditorInput && this.editor.input.isSessionAppPreview;
+		this._update(isSessionAppPreview, !model.url);
+		store.add(model.onDidNavigate(event => this._update(isSessionAppPreview, !event.url)));
 	}
 
 	override onModelDetached(): void {
-		this._setVisible(true);
+		const isSessionAppPreview = this.editor.input instanceof BrowserEditorInput && this.editor.input.isSessionAppPreview;
+		this._update(isSessionAppPreview, true);
 	}
 
-	private _setVisible(visible: boolean): void {
+	private _update(isSessionAppPreview: boolean, visible: boolean): void {
+		if (isSessionAppPreview) {
+			this._title.textContent = localize('browser.appPreviewWelcomeTitle', "App Preview");
+			this._subtitle.textContent = localize('browser.appPreviewWelcomeSubtitle', "Ask the coding agent to start the app. The preview will open when a local app URL appears.");
+		} else {
+			this._title.textContent = localize('browser.welcomeTitle', "Browser");
+			this._subtitle.textContent = this._defaultSubtitle;
+		}
+		this._configureButton.style.display = isSessionAppPreview ? '' : 'none';
 		this._container.style.display = visible ? '' : 'none';
 	}
 }

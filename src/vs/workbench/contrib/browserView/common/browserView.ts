@@ -140,6 +140,7 @@ export interface IBrowserEditorViewState {
 	readonly url?: string;
 	readonly title?: string;
 	readonly favicon?: string;
+	readonly isSessionAppPreview?: boolean;
 
 	/**
 	 * When true, indicates that this browser tab was opened via the localhost

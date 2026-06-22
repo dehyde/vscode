@@ -39,14 +39,36 @@ export interface DesignerBranchState {
 	readonly defaultBranch: string | undefined;
 	readonly currentBranch: string | undefined;
 	readonly syncState: 'synced' | 'syncing' | 'problem';
+	readonly repositoryReady?: boolean;
 	readonly branches: readonly DesignerBranchItem[];
 	readonly tree: readonly DesignerBranchTreeNode[];
 }
 
+export type DesignerSyncState = 'idle' | 'saving' | 'pushing' | 'synced' | 'blocked' | 'problem';
+
+export type DesignerSyncBlockedReason =
+	'branchNameRequired' |
+	'mergeConflicts' |
+	'noRemote' |
+	'pushRejected' |
+	'authRequired' |
+	'saveFailed' |
+	'switchFailed';
+
+export interface DesignerSyncStatus {
+	readonly state: DesignerSyncState;
+	readonly message?: string;
+	readonly previousBranch?: string;
+	readonly targetBranch?: string;
+	readonly targetRepoPath?: string;
+	readonly agentPrompt?: string;
+}
+
 export interface DesignerBranchCheckoutResult {
 	readonly state: DesignerBranchState;
+	readonly sync?: DesignerSyncStatus;
 	readonly blocked?: {
-		readonly reason: 'dirtyWorkTree' | 'worktreeBranchAlreadyUsed' | 'branchNameRequired' | 'saveFailed';
+		readonly reason: 'dirtyWorkTree' | 'worktreeBranchAlreadyUsed' | DesignerSyncBlockedReason;
 		readonly message: string;
 	};
 }
@@ -69,8 +91,13 @@ export interface DesignerRepoState {
 
 export interface DesignerRepoSwitchResult {
 	readonly state: DesignerRepoState;
+	readonly sync?: DesignerSyncStatus;
 	readonly blocked?: {
-		readonly reason: 'branchNameRequired' | 'saveFailed';
+		readonly reason: DesignerSyncBlockedReason;
 		readonly message: string;
 	};
+}
+
+export interface DesignerRepoRemoveResult {
+	readonly state: DesignerRepoState;
 }

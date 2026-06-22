@@ -66,6 +66,14 @@ body {
 	--vscode-shadow-depth-y: 0 5px 10px -4px rgba(0, 0, 0, 0.04);
 }
 
+/* Designer build chrome cleanup */
+.monaco-workbench .open-in-agents-titlebar-widget,
+.monaco-workbench [id="status.host"],
+.monaco-workbench [id="chat.statusBarEntry"],
+.monaco-workbench [id="status.notifications"] {
+	display: none !important;
+}
+
 /* Disable panel/part shadows when the setting is off (preserves floating modals, notifications, etc.) */
 .monaco-workbench.no-shadows .part.titlebar,
 .monaco-workbench.no-shadows .part.activitybar,

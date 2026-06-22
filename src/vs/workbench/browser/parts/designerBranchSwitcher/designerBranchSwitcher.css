@@ -175,7 +175,7 @@
 .designer-branch-switcher__row,
 .designer-branch-switcher__repo-row {
 	display: grid;
-	grid-template-columns: 16px minmax(0, 1fr) auto auto;
+	grid-template-columns: 16px minmax(0, 1fr) auto auto auto;
 	align-items: center;
 	gap: 6px;
 	min-height: 26px;
@@ -216,6 +216,35 @@
 	background: var(--vscode-list-activeSelectionBackground);
 	color: var(--vscode-list-activeSelectionForeground);
 	cursor: default;
+}
+
+.designer-branch-switcher__repo-remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	color: var(--vscode-icon-foreground);
+	background: transparent;
+	border: 0;
+	border-radius: 4px;
+	opacity: 0;
+	cursor: pointer;
+}
+
+.designer-branch-switcher__repo-row:hover .designer-branch-switcher__repo-remove,
+.designer-branch-switcher__repo-remove:focus-visible {
+	opacity: 1;
+}
+
+.designer-branch-switcher__repo-remove:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.designer-branch-switcher__repo-remove:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
 }
 
 .designer-branch-switcher__row--switching,
@@ -311,6 +340,22 @@
 
 .designer-branch-switcher__problem-action:hover {
 	background: var(--vscode-button-hoverBackground);
+}
+
+.designer-branch-switcher__problem-action--switch,
+.designer-branch-switcher__problem-action--copy {
+	color: var(--vscode-button-secondaryForeground);
+	background: var(--vscode-button-secondaryBackground);
+}
+
+.designer-branch-switcher__problem-action--switch:hover,
+.designer-branch-switcher__problem-action--copy:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.designer-branch-switcher__problem-action:disabled {
+	opacity: 0.55;
+	cursor: default;
 }
 
 .designer-branch-switcher__problem-dismiss {

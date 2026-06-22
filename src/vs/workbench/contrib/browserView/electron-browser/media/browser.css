@@ -715,6 +715,19 @@
 			}
 		}
 
+		.browser-welcome-configure-button {
+			margin-top: 14px;
+			padding: 4px 10px;
+			color: var(--vscode-button-foreground);
+			background-color: var(--vscode-button-background);
+			border: 0;
+			border-radius: var(--vscode-cornerRadius-small);
+			cursor: pointer;
+		}
+
+		.browser-welcome-configure-button:hover {
+			background-color: var(--vscode-button-hoverBackground);
+		}
 	}
 
 	/* Site info indicator in URL bar */

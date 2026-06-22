@@ -8,6 +8,7 @@ import { $, addDisposableListener, EventType, getWindow } from '../../../../base
 import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { localize } from '../../../../nls.js';
 
 type DesignerBranchStatus = 'synced' | 'remoteOnly' | 'localOnly' | 'problem';
@@ -32,14 +33,27 @@ interface DesignerBranchState {
 	readonly defaultBranch: string | undefined;
 	readonly currentBranch: string | undefined;
 	readonly syncState: 'synced' | 'syncing' | 'problem';
+	readonly repositoryReady?: boolean;
 	readonly branches: readonly DesignerBranchItem[];
 	readonly tree: readonly DesignerBranchTreeNode[];
 }
 
+type DesignerSyncState = 'idle' | 'saving' | 'pushing' | 'synced' | 'blocked' | 'problem';
+
+interface DesignerSyncStatus {
+	readonly state: DesignerSyncState;
+	readonly message?: string;
+	readonly previousBranch?: string;
+	readonly targetBranch?: string;
+	readonly targetRepoPath?: string;
+	readonly agentPrompt?: string;
+}
+
 interface DesignerBranchCheckoutResult {
 	readonly state: DesignerBranchState;
+	readonly sync?: DesignerSyncStatus;
 	readonly blocked?: {
-		readonly reason: 'dirtyWorkTree' | 'worktreeBranchAlreadyUsed' | 'branchNameRequired' | 'saveFailed';
+		readonly reason: 'dirtyWorkTree' | 'worktreeBranchAlreadyUsed' | 'branchNameRequired' | 'mergeConflicts' | 'noRemote' | 'pushRejected' | 'authRequired' | 'saveFailed' | 'switchFailed';
 		readonly message: string;
 	};
 }
@@ -62,10 +76,15 @@ interface DesignerRepoState {
 
 interface DesignerRepoSwitchResult {
 	readonly state: DesignerRepoState;
+	readonly sync?: DesignerSyncStatus;
 	readonly blocked?: {
-		readonly reason: 'branchNameRequired' | 'saveFailed';
+		readonly reason: 'branchNameRequired' | 'mergeConflicts' | 'noRemote' | 'pushRejected' | 'authRequired' | 'saveFailed' | 'switchFailed';
 		readonly message: string;
 	};
+}
+
+interface DesignerRepoRemoveResult {
+	readonly state: DesignerRepoState;
 }
 
 export class DesignerBranchSwitcher extends Disposable {
@@ -88,11 +107,15 @@ export class DesignerBranchSwitcher extends Disposable {
 	private problemMessage: string | undefined;
 	private repoProblemMessage: string | undefined;
 	private blockedCheckoutBranchName: string | undefined;
+	private blockedRepoPath: string | undefined;
+	private recoveryAgentPrompt: string | undefined;
 	private dropdownMode: 'branch' | 'repo' | undefined;
 	private refreshingBranches = false;
 	private refreshingRepos = false;
 	private switchingBranchName: string | undefined;
 	private switchingRepoPath: string | undefined;
+	private activeSyncState: DesignerSyncState | undefined;
+	private removingRepoPath: string | undefined;
 	private cloningRepoUrl: string | undefined;
 	private treeRenderDeferred = false;
 	private refreshPromise: Promise<void> | undefined;
@@ -105,7 +128,8 @@ export class DesignerBranchSwitcher extends Disposable {
 
 	constructor(
 		parent: HTMLElement,
-		@ICommandService private readonly commandService: ICommandService
+		@ICommandService private readonly commandService: ICommandService,
+		@IDialogService private readonly dialogService: IDialogService
 	) {
 		super();
 
@@ -298,8 +322,13 @@ export class DesignerBranchSwitcher extends Disposable {
 		this.repoState = await this.commandService.executeCommand<DesignerRepoState>('_designerRepos.getState');
 	}
 
-	private async doRefresh(options: { updateRemotes?: boolean }): Promise<void> {
+	private async doRefresh(options: { updateRemotes?: boolean; retryDuringStartup?: boolean }): Promise<void> {
 		this.state = await this.commandService.executeCommand<DesignerBranchState>('_designerBranches.getState', { updateRemotes: options.updateRemotes === true });
+		if (this.state?.repositoryReady === false) {
+			this.scheduleStartupRefreshRetry(options);
+			return;
+		}
+
 		this.startupRefreshAttempts = 0;
 	}
 
@@ -345,7 +374,7 @@ export class DesignerBranchSwitcher extends Disposable {
 		this.branchButton.setAttribute('aria-expanded', String(this.dropdownMode === 'branch'));
 
 		const projectName = this.repoState?.repos.find(repo => repo.isCurrent)?.name ?? this.state?.projectName ?? localize('designerBranchSwitcherProjectFallback', "Project");
-		const branchName = this.switchingBranchName ?? this.state?.currentBranch ?? this.state?.defaultBranch ?? localize('designerBranchSwitcherNoBranch', "No branch");
+		const branchName = this.getBranchButtonLabel();
 
 		this.repoButton.append($('span.designer-branch-switcher__project', undefined, projectName));
 		this.branchButton.append(
@@ -387,7 +416,7 @@ export class DesignerBranchSwitcher extends Disposable {
 	}
 
 	private renderBranchIndicatorIcon(): HTMLElement {
-		const syncState = this.problemMessage ? 'problem' : this.isBusy() ? 'syncing' : this.state?.syncState ?? 'syncing';
+		const syncState = this.problemMessage ? 'problem' : this.activeSyncState === 'saving' || this.activeSyncState === 'pushing' || this.activeSyncState === 'blocked' ? 'syncing' : this.isBusy() ? 'syncing' : this.state?.syncState ?? 'syncing';
 		const icon = document.createElement('span');
 		icon.classList.add('codicon', 'designer-branch-switcher__sync', `designer-branch-switcher__sync--${syncState}`);
 
@@ -411,6 +440,22 @@ export class DesignerBranchSwitcher extends Disposable {
 		return icon;
 	}
 
+	private getBranchButtonLabel(): string {
+		if (this.activeSyncState === 'saving') {
+			return localize('designerBranchSwitcherSavingLabel', "Saving...");
+		}
+
+		if (this.activeSyncState === 'pushing') {
+			return localize('designerBranchSwitcherPushingLabel', "Saving to cloud...");
+		}
+
+		if (this.switchingBranchName || this.switchingRepoPath) {
+			return localize('designerBranchSwitcherSwitchingLabel', "Switching...");
+		}
+
+		return this.state?.currentBranch ?? this.state?.defaultBranch ?? localize('designerBranchSwitcherNoBranch', "No branch");
+	}
+
 	private renderProblem(message: string): HTMLElement {
 		const problem = $('.designer-branch-switcher__problem');
 		problem.append(
@@ -418,12 +463,23 @@ export class DesignerBranchSwitcher extends Disposable {
 			$('span.designer-branch-switcher__problem-message', undefined, message)
 		);
 
-		if (this.blockedCheckoutBranchName) {
+		if (this.blockedCheckoutBranchName || this.blockedRepoPath) {
 			const actions = $('.designer-branch-switcher__problem-actions');
-			const save = document.createElement('button');
-			save.className = 'designer-branch-switcher__problem-action';
-			save.type = 'button';
-			save.textContent = localize('designerBranchSwitcherSaveAndSwitch', "Save and switch");
+			const retry = document.createElement('button');
+			retry.className = 'designer-branch-switcher__problem-action designer-branch-switcher__problem-action--retry';
+			retry.type = 'button';
+			retry.textContent = localize('designerBranchSwitcherRetrySave', "Retry save");
+
+			const switchWithoutSaving = document.createElement('button');
+			switchWithoutSaving.className = 'designer-branch-switcher__problem-action designer-branch-switcher__problem-action--switch';
+			switchWithoutSaving.type = 'button';
+			switchWithoutSaving.textContent = localize('designerBranchSwitcherSwitchWithoutSaving', "Switch without saving");
+
+			const copy = document.createElement('button');
+			copy.className = 'designer-branch-switcher__problem-action designer-branch-switcher__problem-action--copy';
+			copy.type = 'button';
+			copy.textContent = localize('designerBranchSwitcherCopyIssueForAgent', "Copy issue for agent");
+			copy.disabled = !this.recoveryAgentPrompt;
 
 			const dismiss = document.createElement('button');
 			dismiss.className = 'designer-branch-switcher__problem-dismiss';
@@ -431,14 +487,31 @@ export class DesignerBranchSwitcher extends Disposable {
 			dismiss.title = localize('designerBranchSwitcherDismissProblem', "Dismiss");
 			dismiss.append($('span.codicon.codicon-close'));
 
-			this.renderDisposables.add(addDisposableListener(save, EventType.CLICK, () => this.saveAndCheckoutBranch(this.blockedCheckoutBranchName!)));
+			this.renderDisposables.add(addDisposableListener(retry, EventType.CLICK, () => {
+				if (this.blockedCheckoutBranchName) {
+					this.saveAndCheckoutBranch(this.blockedCheckoutBranchName);
+				} else if (this.blockedRepoPath) {
+					this.switchRepo(this.blockedRepoPath);
+				}
+			}));
+			this.renderDisposables.add(addDisposableListener(switchWithoutSaving, EventType.CLICK, () => {
+				if (this.blockedCheckoutBranchName) {
+					this.checkoutBranchWithoutSaving(this.blockedCheckoutBranchName);
+				} else if (this.blockedRepoPath) {
+					this.switchRepoWithoutSaving(this.blockedRepoPath);
+				}
+			}));
+			this.renderDisposables.add(addDisposableListener(copy, EventType.CLICK, () => this.copyRecoveryPrompt()));
 			this.renderDisposables.add(addDisposableListener(dismiss, EventType.CLICK, () => {
 				this.problemMessage = undefined;
 				this.blockedCheckoutBranchName = undefined;
+				this.repoProblemMessage = undefined;
+				this.blockedRepoPath = undefined;
+				this.recoveryAgentPrompt = undefined;
 				this.render();
 			}));
 
-			actions.append(save, dismiss);
+			actions.append(retry, switchWithoutSaving, copy, dismiss);
 			problem.append(actions);
 		}
 
@@ -526,6 +599,24 @@ export class DesignerBranchSwitcher extends Disposable {
 			row.append($('span.codicon.codicon-sync.codicon-modifier-spin.designer-branch-switcher__row-check'));
 		} else if (repo.status === 'ready') {
 			this.renderDisposables.add(addDisposableListener(row, EventType.CLICK, () => this.switchRepo(repo.path)));
+		}
+
+		if (!repo.isCurrent && repo.status === 'ready') {
+			const remove = document.createElement('button');
+			remove.className = 'designer-branch-switcher__repo-remove';
+			remove.type = 'button';
+			remove.disabled = this.isBusy() || repo.path === this.removingRepoPath;
+			remove.title = localize('designerRepoSwitcherRemoveTitle', "Remove repo");
+			remove.setAttribute('aria-label', localize('designerRepoSwitcherRemoveAria', "Remove {0}", repo.name));
+			remove.append(repo.path === this.removingRepoPath ? $('span.codicon.codicon-sync.codicon-modifier-spin') : $('span.codicon.codicon-close'));
+
+			this.renderDisposables.add(addDisposableListener(remove, EventType.CLICK, event => {
+				event.preventDefault();
+				event.stopPropagation();
+				this.confirmRemoveRepo(repo);
+			}));
+
+			row.append(remove);
 		}
 
 		if (repo.message) {
@@ -654,7 +745,9 @@ export class DesignerBranchSwitcher extends Disposable {
 
 	private renderBranchBadge(branch: DesignerBranchItem): HTMLElement {
 		const badgeText = branch.name === this.switchingBranchName
-			? localize('designerBranchSwitcherSwitchingBadge', "switching")
+			? this.activeSyncState === 'saving' || this.activeSyncState === 'pushing'
+				? localize('designerBranchSwitcherSavingBadge', "saving")
+				: localize('designerBranchSwitcherSwitchingBadge', "switching")
 			: branch.isDefault
 				? localize('designerBranchSwitcherDefaultBadge', "default")
 				: branch.status === 'remoteOnly'
@@ -674,7 +767,10 @@ export class DesignerBranchSwitcher extends Disposable {
 
 	private async saveAndCheckoutBranch(branchName: string): Promise<void> {
 		this.switchingBranchName = branchName;
+		this.activeSyncState = 'saving';
 		this.problemMessage = undefined;
+		this.blockedCheckoutBranchName = undefined;
+		this.recoveryAgentPrompt = undefined;
 		this.render();
 
 		try {
@@ -684,18 +780,54 @@ export class DesignerBranchSwitcher extends Disposable {
 			}
 
 			this.state = result.state;
+			this.activeSyncState = result.sync?.state;
 
 			if (result.blocked) {
 				this.problemMessage = result.blocked.message;
 				this.blockedCheckoutBranchName = branchName;
+				this.recoveryAgentPrompt = result.sync?.agentPrompt;
+				this.activeSyncState = 'blocked';
 			} else {
 				this.blockedCheckoutBranchName = undefined;
+				this.recoveryAgentPrompt = undefined;
 				this.dropdownMode = undefined;
 				this.windowDisposables.clear();
 			}
 		} catch (error) {
 			this.problemMessage = getErrorMessage(error);
 			this.blockedCheckoutBranchName = branchName;
+			this.recoveryAgentPrompt = this.createFallbackAgentPrompt(this.problemMessage);
+			this.activeSyncState = 'problem';
+		} finally {
+			this.switchingBranchName = undefined;
+			if (this.activeSyncState === 'saving' || this.activeSyncState === 'pushing') {
+				this.activeSyncState = undefined;
+			}
+			this.render();
+		}
+	}
+
+	private async checkoutBranchWithoutSaving(branchName: string): Promise<void> {
+		this.switchingBranchName = branchName;
+		this.activeSyncState = undefined;
+		this.problemMessage = undefined;
+		this.blockedCheckoutBranchName = undefined;
+		this.recoveryAgentPrompt = undefined;
+		this.render();
+
+		try {
+			const result = await this.commandService.executeCommand<DesignerBranchCheckoutResult>('_designerBranches.checkout', { branchName, skipSave: true });
+			if (!result) {
+				throw new Error(localize('designerBranchSwitcherCheckoutFailed', "Branch could not be switched."));
+			}
+
+			this.state = result.state;
+			this.dropdownMode = undefined;
+			this.windowDisposables.clear();
+		} catch (error) {
+			this.problemMessage = getErrorMessage(error);
+			this.blockedCheckoutBranchName = branchName;
+			this.recoveryAgentPrompt = this.createFallbackAgentPrompt(this.problemMessage);
 		} finally {
 			this.switchingBranchName = undefined;
 			this.render();
@@ -704,27 +836,132 @@ export class DesignerBranchSwitcher extends Disposable {
 
 	private async switchRepo(repoPath: string): Promise<void> {
 		this.switchingRepoPath = repoPath;
+		this.activeSyncState = 'saving';
 		this.repoProblemMessage = undefined;
+		this.blockedRepoPath = undefined;
+		this.recoveryAgentPrompt = undefined;
 		this.render();
 
 		try {
-			const result = await this.commandService.executeCommand<DesignerRepoSwitchResult>('_designerRepos.switch', { repoPath });
+			const result = await this.commandService.executeCommand<DesignerRepoSwitchResult>('_designerRepos.saveAndSwitch', { repoPath });
 			if (!result) {
 				throw new Error(localize('designerRepoSwitcherSwitchFailed', "Repo could not be opened."));
 			}
 
 			this.repoState = result.state;
+			this.activeSyncState = result.sync?.state;
 			if (result.blocked) {
 				this.repoProblemMessage = result.blocked.message;
+				this.blockedRepoPath = repoPath;
+				this.recoveryAgentPrompt = result.sync?.agentPrompt;
+				this.activeSyncState = 'blocked';
 			} else {
 				this.dropdownMode = undefined;
 				this.windowDisposables.clear();
 			}
 		} catch (error) {
 			this.repoProblemMessage = getErrorMessage(error);
+			this.blockedRepoPath = repoPath;
+			this.recoveryAgentPrompt = this.createFallbackAgentPrompt(this.repoProblemMessage);
+			this.activeSyncState = 'problem';
+		} finally {
+			this.switchingRepoPath = undefined;
+			if (this.activeSyncState === 'saving' || this.activeSyncState === 'pushing') {
+				this.activeSyncState = undefined;
+			}
+			this.render();
+		}
+	}
+
+	private async switchRepoWithoutSaving(repoPath: string): Promise<void> {
+		this.switchingRepoPath = repoPath;
+		this.activeSyncState = undefined;
+		this.repoProblemMessage = undefined;
+		this.blockedRepoPath = undefined;
+		this.recoveryAgentPrompt = undefined;
+		this.render();
+
+		try {
+			const result = await this.commandService.executeCommand<DesignerRepoSwitchResult>('_designerRepos.switch', { repoPath, skipSave: true });
+			if (!result) {
+				throw new Error(localize('designerRepoSwitcherSwitchFailed', "Repo could not be opened."));
+			}
+
+			this.repoState = result.state;
+			this.dropdownMode = undefined;
+			this.windowDisposables.clear();
+		} catch (error) {
+			this.repoProblemMessage = getErrorMessage(error);
+			this.blockedRepoPath = repoPath;
+			this.recoveryAgentPrompt = this.createFallbackAgentPrompt(this.repoProblemMessage);
 		} finally {
 			this.switchingRepoPath = undefined;
 			this.render();
+		}
+	}
+
+	private async copyRecoveryPrompt(): Promise<void> {
+		if (!this.recoveryAgentPrompt) {
+			return;
+		}
+
+		try {
+			await getWindow(this.container).navigator.clipboard?.writeText(this.recoveryAgentPrompt);
+		} catch {
+			// Clipboard support is unavailable in some test/browser contexts. The recovery text remains visible through the action state.
+		}
+	}
+
+	private createFallbackAgentPrompt(message: string | undefined): string {
+		return localize('designerBranchSwitcherFallbackAgentPrompt', "Help me resolve this Git save or switch issue: {0}", message ?? localize('designerBranchSwitcherUnknownIssue', "Unknown issue"));
+	}
+
+	private async confirmRemoveRepo(repo: DesignerRepoItem): Promise<void> {
+		const removeFromList = localize('designerRepoSwitcherRemoveFromList', "Remove from List");
+		const deleteLocalFiles = localize('designerRepoSwitcherDeleteLocalFiles', "Remove and Delete Local Files");
+
+		const result = await this.dialogService.prompt<'list' | 'delete'>({
+			type: 'warning',
+			message: localize('designerRepoSwitcherRemovePrompt', "Remove {0}?", repo.name),
+			detail: localize('designerRepoSwitcherRemovePromptDetail', "Removing from the list keeps local files. Deleting local files moves the repo folder to the trash."),
+			buttons: [
+				{
+					label: removeFromList,
+					run: () => 'list'
+				},
+				{
+					label: deleteLocalFiles,
+					run: () => 'delete'
+				}
+			],
+			cancelButton: true
+		});
+
+		if (!result.result) {
+			return;
+		}
+
+		await this.removeRepo(repo.path, result.result === 'delete');
+	}
+
+	private async removeRepo(repoPath: string, deleteLocalFiles: boolean): Promise<void> {
+		this.removingRepoPath = repoPath;
+		this.repoProblemMessage = undefined;
+		this.render();
+
+		try {
+			const result = await this.commandService.executeCommand<DesignerRepoRemoveResult>('_designerRepos.remove', { repoPath, deleteLocalFiles });
+			if (!result) {
+				throw new Error(localize('designerRepoSwitcherRemoveFailed', "Repo could not be removed."));
+			}
+
+			this.repoState = result.state;
+		} catch (error) {
+			this.repoProblemMessage = getErrorMessage(error);
+		} finally {
+			this.removingRepoPath = undefined;
+			this.render();
+			this.focusRepoUrlInput();
 		}
 	}
 
@@ -809,7 +1046,7 @@ export class DesignerBranchSwitcher extends Disposable {
 	}
 
 	private isBusy(): boolean {
-		return this.refreshingBranches || this.refreshingRepos || !!this.switchingBranchName || !!this.switchingRepoPath || !!this.cloningRepoUrl;
+		return this.refreshingBranches || this.refreshingRepos || !!this.switchingBranchName || !!this.switchingRepoPath || !!this.removingRepoPath || !!this.cloningRepoUrl;
 	}
 
 	private getBranchName(input: string): string {
@@ -879,7 +1116,8 @@ export class DesignerBranchSwitcher extends Disposable {
 		this.render();
 
 		try {
-			this.repoState = await this.commandService.executeCommand<DesignerRepoState>('_designerRepos.clone', { url });
+			const cloneState = await this.commandService.executeCommand<DesignerRepoState>('_designerRepos.clone', { url });
+			this.repoState = cloneState ? this.mergeRepoState(this.repoState, cloneState) : cloneState;
 		} catch (error) {
 			this.repoProblemMessage = getErrorMessage(error);
 		} finally {
@@ -899,5 +1137,31 @@ export class DesignerBranchSwitcher extends Disposable {
 		return lastSegment
 			.replace(/[-_]+/g, ' ')
 			.replace(/\b\w/g, value => value.toUpperCase());
+	}
+
+	private mergeRepoState(existingState: DesignerRepoState | undefined, nextState: DesignerRepoState): DesignerRepoState {
+		if (!existingState) {
+			return nextState;
+		}
+
+		const reposByPath = new Map<string, DesignerRepoItem>();
+		for (const repo of existingState.repos) {
+			reposByPath.set(this.normalizeRepoPath(repo.path), repo);
+		}
+
+		for (const repo of nextState.repos) {
+			const key = this.normalizeRepoPath(repo.path);
+			const existingRepo = reposByPath.get(key);
+			reposByPath.set(key, existingRepo ? { ...existingRepo, ...repo } : repo);
+		}
+
+		return {
+			currentRepoPath: nextState.currentRepoPath ?? existingState.currentRepoPath,
+			repos: [...reposByPath.values()]
+		};
+	}
+
+	private normalizeRepoPath(repoPath: string): string {
+		return repoPath.trim().toLowerCase();
 	}
 }

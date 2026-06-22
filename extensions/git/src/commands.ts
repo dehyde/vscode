@@ -5,7 +5,7 @@
 
 import * as os from 'os';
 import * as path from 'path';
-import { Command, commands, Disposable, MessageOptions, Position, QuickPickItem, Range, SourceControlResourceState, TextDocumentShowOptions, TextEditor, Uri, ViewColumn, window, workspace, WorkspaceEdit, WorkspaceFolder, TimelineItem, env, Selection, TextDocumentContentProvider, InputBoxValidationSeverity, TabInputText, TabInputTextMerge, QuickPickItemKind, TextDocument, LogOutputChannel, l10n, Memento, UIKind, QuickInputButton, ThemeIcon, SourceControlHistoryItem, SourceControl, InputBoxValidationMessage, Tab, TabInputNotebook, QuickInputButtonLocation, languages, SourceControlArtifact, ProgressLocation } from 'vscode';
+import { Command, commands, Disposable, MessageOptions, Position, QuickPickItem, Range, SourceControlResourceState, TextDocumentShowOptions, TextEditor, Uri, ViewColumn, window, workspace, WorkspaceEdit, WorkspaceFolder, TimelineItem, env, Selection, TextDocumentContentProvider, InputBoxValidationSeverity, TabInputText, TabInputTextMerge, QuickPickItemKind, TextDocument, LogOutputChannel, l10n, Memento, UIKind, QuickInputButton, ThemeIcon, SourceControlHistoryItem, SourceControl, InputBoxValidationMessage, Tab, TabInputNotebook, QuickInputButtonLocation, languages, SourceControlArtifact, ProgressLocation, FileType } from 'vscode';
 import TelemetryReporter from '@vscode/extension-telemetry';
 import type { CommitOptions, RemoteSourcePublisher, Remote, Branch, Ref } from './api/git';
 import { ForcePushMode, GitErrorCodes, RefType, Status } from './api/git.constants';
@@ -21,7 +21,7 @@ import { getRemoteSourceActions, pickRemoteSource } from './remoteSource';
 import { RemoteSourceAction } from './typings/git-base';
 import { CloneManager } from './cloneManager';
 import { buildDesignerBranchTree, mergeDesignerBranchRefs } from './designerBranchModel';
-import { DesignerBranchCheckoutResult, DesignerBranchRef, DesignerBranchState, DesignerRepoItem, DesignerRepoState, DesignerRepoSwitchResult } from './designerBranchTypes';
+import { DesignerBranchCheckoutResult, DesignerBranchRef, DesignerBranchState, DesignerRepoItem, DesignerRepoRemoveResult, DesignerRepoState, DesignerRepoSwitchResult, DesignerSyncBlockedReason, DesignerSyncStatus } from './designerBranchTypes';
 
 function isBranch(ref: Ref | Branch): ref is Branch {
 	return ref.type === RefType.Head;
@@ -387,6 +387,18 @@ function command(commandId: string, options: ScmCommandOptions = {}): MethodDeco
 		}
 		Commands.push({ commandId, key: String(key), method: descriptor.value, options });
 	};
+}
+
+function getDesignerErrorMessage(error: unknown): string {
+	if (error instanceof Error) {
+		return error.message;
+	}
+
+	if (error instanceof GitError) {
+		return error.message;
+	}
+
+	return String(error);
 }
 
 // const ImageMimetypes = [
@@ -787,6 +799,7 @@ async function evaluateDiagnosticsCommitHook(repository: Repository, options: Co
 export class CommandCenter {
 
 	private static readonly designerReposStorageKey = 'designer.repos.known';
+	private static readonly designerRemovedReposStorageKey = 'designer.repos.removed';
 
 	private disposables: Disposable[];
 	private commandErrors = new CommandErrorOutputTextDocumentContentProvider();
@@ -2821,7 +2834,11 @@ export class CommandCenter {
 
 	@command('_designerBranches.getState')
 	async getDesignerBranchesState(options?: { updateRemotes?: boolean }): Promise<DesignerBranchState> {
-		const repository = await this.pickDesignerRepository();
+		const repository = this.getDesignerWorkspaceRepository();
+		if (!repository) {
+			return this.getDesignerLoadingBranchState();
+		}
+
 		if (options?.updateRemotes) {
 			await this.updateDesignerBranchRefs(repository);
 		}
@@ -2830,7 +2847,15 @@ export class CommandCenter {
 	}
 
 	@command('_designerBranches.checkout')
-	async checkoutDesignerBranch(options?: { branchName?: string }): Promise<DesignerBranchCheckoutResult> {
+	async checkoutDesignerBranch(options?: { branchName?: string; skipSave?: boolean }): Promise<DesignerBranchCheckoutResult> {
+		if (!options?.skipSave) {
+			return this.saveAndCheckoutDesignerBranch(options);
+		}
+
+		return this.checkoutDesignerBranchWithoutSaving(options);
+	}
+
+	private async checkoutDesignerBranchWithoutSaving(options?: { branchName?: string }): Promise<DesignerBranchCheckoutResult> {
 		const branchName = options?.branchName;
 		if (!branchName) {
 			throw new Error(l10n.t('No branch selected.'));
@@ -2897,7 +2922,13 @@ export class CommandCenter {
 			throw error;
 		}
 
-		return { state: await this.getDesignerBranchesStateForRepository(repository) };
+		return {
+			state: await this.getDesignerBranchesStateForRepository(repository),
+			sync: {
+				state: 'synced',
+				targetBranch: branchName
+			}
+		};
 	}
 
 	@command('_designerBranches.saveAndCheckout')
@@ -2911,53 +2942,121 @@ export class CommandCenter {
 		await repository.status();
 
 		if (!this.hasDesignerUnsavedChanges(repository)) {
-			return this.checkoutDesignerBranch({ branchName });
+			return this.checkoutDesignerBranchWithoutSaving({ branchName });
 		}
 
 		if (repository.mergeGroup.resourceStates.length > 0) {
+			const message = l10n.t('Resolve merge conflicts before saving and switching.');
 			return {
 				state: await this.getDesignerBranchesStateForRepository(repository),
 				blocked: {
-					reason: 'dirtyWorkTree',
-					message: l10n.t('Resolve merge conflicts before saving and switching.')
-				}
+					reason: 'mergeConflicts',
+					message
+				},
+				sync: this.createDesignerBlockedSync('mergeConflicts', message, { previousBranch: repository.HEAD?.name, targetBranch: branchName })
 			};
 		}
 
 		const currentBranchName = await this.ensureDesignerCurrentBranch(repository);
 		if (!currentBranchName) {
+			const message = l10n.t('Add a branch name before saving.');
 			return {
 				state: await this.getDesignerBranchesStateForRepository(repository),
 				blocked: {
 					reason: 'branchNameRequired',
-					message: l10n.t('Add a branch name before saving.')
-				}
+					message
+				},
+				sync: this.createDesignerBlockedSync('branchNameRequired', message, { targetBranch: branchName })
 			};
 		}
 
 		try {
 			await this.saveDesignerCurrentBranch(repository, currentBranchName);
-		} catch {
+		} catch (error) {
+			const blocked = this.getDesignerSaveBlocked(error);
 			return {
 				state: await this.getDesignerBranchesStateForRepository(repository),
 				blocked: {
-					reason: 'saveFailed',
-					message: l10n.t('Branch could not be saved to the cloud. Check Git, then try again.')
-				}
+					reason: blocked.reason,
+					message: blocked.message
+				},
+				sync: this.createDesignerBlockedSync(blocked.reason, blocked.message, { previousBranch: currentBranchName, targetBranch: branchName })
 			};
 		}
 
 		try {
-			return await this.checkoutDesignerBranch({ branchName });
-		} catch {
+			const result = await this.checkoutDesignerBranchWithoutSaving({ branchName });
+			return {
+				...result,
+				sync: {
+					state: 'synced',
+					previousBranch: currentBranchName,
+					targetBranch: branchName
+				}
+			};
+		} catch (error) {
+			const message = getDesignerErrorMessage(error);
 			return {
 				state: await this.getDesignerBranchesStateForRepository(repository),
 				blocked: {
-					reason: 'saveFailed',
-					message: l10n.t('Branch was saved, but could not be switched. Check Git, then try again.')
-				}
+					reason: 'switchFailed',
+					message: l10n.t('Branch was saved, but could not be switched. {0}', message)
+				},
+				sync: this.createDesignerBlockedSync('switchFailed', message, { previousBranch: currentBranchName, targetBranch: branchName })
 			};
 		}
+	}
+
+	@command('_designerBranches.saveCurrent')
+	async saveCurrentDesignerBranch(): Promise<DesignerSyncStatus> {
+		const repository = await this.pickDesignerRepository();
+		await repository.status();
+
+		if (!this.hasDesignerUnsavedChanges(repository)) {
+			return {
+				state: 'synced',
+				previousBranch: repository.HEAD?.name
+			};
+		}
+
+		if (repository.mergeGroup.resourceStates.length > 0) {
+			const message = l10n.t('Resolve merge conflicts before saving.');
+			return this.createDesignerBlockedSync('mergeConflicts', message, { previousBranch: repository.HEAD?.name });
+		}
+
+		const currentBranchName = await this.ensureDesignerCurrentBranch(repository);
+		if (!currentBranchName) {
+			const message = l10n.t('Add a branch name before saving.');
+			return this.createDesignerBlockedSync('branchNameRequired', message);
+		}
+
+		try {
+			await this.saveDesignerCurrentBranch(repository, currentBranchName);
+			return {
+				state: 'synced',
+				previousBranch: currentBranchName
+			};
+		} catch (error) {
+			const blocked = this.getDesignerSaveBlocked(error);
+			return this.createDesignerBlockedSync(blocked.reason, blocked.message, { previousBranch: currentBranchName });
+		}
+	}
+
+	@command('_designerBranches.getSyncState')
+	async getDesignerSyncState(): Promise<DesignerSyncStatus> {
+		const repository = this.getDesignerWorkspaceRepository();
+		if (!repository) {
+			return {
+				state: 'problem',
+				message: l10n.t('No project is open.')
+			};
+		}
+
+		await repository.status();
+		return {
+			state: this.hasDesignerUnsavedChanges(repository) ? 'idle' : 'synced',
+			previousBranch: repository.HEAD?.name
+		};
 	}
 
 	private hasDesignerUnsavedChanges(repository: Repository): boolean {
@@ -2982,6 +3081,8 @@ export class CommandCenter {
 	}
 
 	private async saveDesignerCurrentBranch(repository: Repository, branchName: string): Promise<void> {
+		await this.saveDesignerDirtyTextDocuments(repository);
+
 		const resources = [
 			...repository.workingTreeGroup.resourceStates.map(resource => resource.resourceUri),
 			...repository.untrackedGroup.resourceStates.map(resource => resource.resourceUri)
@@ -3007,6 +3108,72 @@ export class CommandCenter {
 		}
 
 		await this.updateDesignerBranchRefs(repository);
+	}
+
+	private async saveDesignerDirtyTextDocuments(repository: Repository): Promise<void> {
+		const documents = workspace.textDocuments.filter(document =>
+			document.isDirty &&
+			document.uri.scheme === 'file' &&
+			isDescendant(repository.root, document.uri.fsPath)
+		);
+
+		await Promise.all(documents.map(document => document.save()));
+		await repository.status();
+	}
+
+	private getDesignerSaveBlocked(error: unknown): { reason: DesignerSyncBlockedReason; message: string } {
+		const message = getDesignerErrorMessage(error);
+		const lowerMessage = message.toLowerCase();
+
+		if (lowerMessage.includes('authentication') || lowerMessage.includes('permission denied') || lowerMessage.includes('could not read username')) {
+			return {
+				reason: 'authRequired',
+				message: l10n.t('Sign in to Git, then retry saving to cloud.')
+			};
+		}
+
+		if (lowerMessage.includes('no remote') || lowerMessage.includes('does not appear to be a git repository')) {
+			return {
+				reason: 'noRemote',
+				message: l10n.t('No cloud remote is configured for this project.')
+			};
+		}
+
+		if (lowerMessage.includes('rejected') || lowerMessage.includes('fetch first') || lowerMessage.includes('non-fast-forward')) {
+			return {
+				reason: 'pushRejected',
+				message: l10n.t('Could not save to cloud because the remote branch has newer changes.')
+			};
+		}
+
+		return {
+			reason: 'saveFailed',
+			message: l10n.t('Branch could not be saved to the cloud. Check Git, then try again.')
+		};
+	}
+
+	private createDesignerBlockedSync(reason: DesignerSyncBlockedReason, message: string, context: { previousBranch?: string; targetBranch?: string; targetRepoPath?: string } = {}): DesignerSyncStatus {
+		return {
+			state: 'blocked',
+			message,
+			previousBranch: context.previousBranch,
+			targetBranch: context.targetBranch,
+			targetRepoPath: context.targetRepoPath,
+			agentPrompt: this.createDesignerAgentPrompt(reason, message, context)
+		};
+	}
+
+	private createDesignerAgentPrompt(reason: DesignerSyncBlockedReason, message: string, context: { previousBranch?: string; targetBranch?: string; targetRepoPath?: string }): string {
+		const currentProject = workspace.workspaceFolders?.[0]?.uri.fsPath ?? l10n.t('No project folder');
+		return [
+			'Help resolve this Git sync issue in the designer build.',
+			`Reason: ${reason}`,
+			`Message: ${message}`,
+			`Project: ${currentProject}`,
+			context.previousBranch ? `Current branch: ${context.previousBranch}` : undefined,
+			context.targetBranch ? `Target branch: ${context.targetBranch}` : undefined,
+			context.targetRepoPath ? `Target repo: ${context.targetRepoPath}` : undefined
+		].filter(isDefined).join('\n');
 	}
 
 	@command('_designerBranches.create')
@@ -3069,7 +3236,16 @@ export class CommandCenter {
 	}
 
 	@command('_designerRepos.switch')
-	async switchDesignerRepo(options?: { repoPath?: string }): Promise<DesignerRepoSwitchResult> {
+	async switchDesignerRepo(options?: { repoPath?: string; skipSave?: boolean }): Promise<DesignerRepoSwitchResult> {
+		if (!options?.skipSave) {
+			return this.saveAndSwitchDesignerRepo(options);
+		}
+
+		return this.switchDesignerRepoWithoutSaving(options);
+	}
+
+	@command('_designerRepos.saveAndSwitch')
+	async saveAndSwitchDesignerRepo(options?: { repoPath?: string }): Promise<DesignerRepoSwitchResult> {
 		const repoPath = options?.repoPath?.trim();
 		if (!repoPath) {
 			throw new Error(l10n.t('No repository selected.'));
@@ -3086,34 +3262,60 @@ export class CommandCenter {
 
 			if (this.hasDesignerUnsavedChanges(repository)) {
 				if (repository.mergeGroup.resourceStates.length > 0) {
+					const message = l10n.t('Resolve merge conflicts before switching projects.');
 					return {
 						state: await this.getDesignerReposStateInternal(),
 						blocked: {
-							reason: 'saveFailed',
-							message: l10n.t('Resolve merge conflicts before switching projects.')
-						}
+							reason: 'mergeConflicts',
+							message
+						},
+						sync: this.createDesignerBlockedSync('mergeConflicts', message, { previousBranch: repository.HEAD?.name, targetRepoPath: repoPath })
 					};
 				}
 
 				const currentBranchName = await this.ensureDesignerCurrentBranch(repository);
 				if (!currentBranchName) {
+					const message = l10n.t('Add a branch name before saving.');
 					return {
 						state: await this.getDesignerReposStateInternal(),
 						blocked: {
 							reason: 'branchNameRequired',
-							message: l10n.t('Add a branch name before saving.')
-						}
+							message
+						},
+						sync: this.createDesignerBlockedSync('branchNameRequired', message, { targetRepoPath: repoPath })
 					};
 				}
 
 				await this.saveDesignerCurrentBranch(repository, currentBranchName);
 			}
 		} catch (error) {
+			const blocked = this.getDesignerSaveBlocked(error);
 			return {
 				state: await this.getDesignerReposStateInternal(),
 				blocked: {
-					reason: 'saveFailed',
-					message: error instanceof Error ? error.message : String(error)
+					reason: blocked.reason,
+					message: blocked.message
+				},
+				sync: this.createDesignerBlockedSync(blocked.reason, blocked.message, { targetRepoPath: repoPath })
+			};
+		}
+
+		return this.switchDesignerRepoWithoutSaving(options);
+	}
+
+	private async switchDesignerRepoWithoutSaving(options?: { repoPath?: string }): Promise<DesignerRepoSwitchResult> {
+		const repoPath = options?.repoPath?.trim();
+		if (!repoPath) {
+			throw new Error(l10n.t('No repository selected.'));
+		}
+
+		const currentRepoPath = workspace.workspaceFolders?.[0]?.uri.fsPath;
+		if (currentRepoPath && pathEquals(currentRepoPath, repoPath)) {
+			return {
+				state: await this.getDesignerReposStateInternal(),
+				sync: {
+					state: 'synced',
+					targetRepoPath: repoPath
 				}
 			};
 		}
@@ -3124,6 +3326,36 @@ export class CommandCenter {
 		});
 
 		await commands.executeCommand('vscode.openFolder', Uri.file(repoPath), { forceReuseWindow: true });
+		return {
+			state: await this.getDesignerReposStateInternal(),
+			sync: {
+				state: 'synced',
+				targetRepoPath: repoPath
+			}
+		};
+	}
+
+	@command('_designerRepos.remove')
+	async removeDesignerRepo(options?: { repoPath?: string; deleteLocalFiles?: boolean }): Promise<DesignerRepoRemoveResult> {
+		const repoPath = options?.repoPath?.trim();
+		if (!repoPath) {
+			throw new Error(l10n.t('No repository selected.'));
+		}
+
+		const currentRepoPath = workspace.workspaceFolders?.[0]?.uri.fsPath;
+		if (currentRepoPath && pathEquals(currentRepoPath, repoPath)) {
+			throw new Error(l10n.t('The current project cannot be removed from the list.'));
+		}
+
+		await this.removeDesignerKnownRepo(repoPath);
+
+		if (options?.deleteLocalFiles) {
+			await workspace.fs.delete(Uri.file(repoPath), { recursive: true, useTrash: true });
+			await this.unhideDesignerRepo(repoPath);
+		} else {
+			await this.hideDesignerRepo(repoPath);
+		}
+
 		return { state: await this.getDesignerReposStateInternal() };
 	}
 
@@ -3180,10 +3412,11 @@ export class CommandCenter {
 
 	private async getDesignerKnownRepos(repoToInclude?: { path: string; name: string; url?: string }): Promise<{ path: string; name: string; url?: string }[]> {
 		const storedRepos = this.globalState.get<{ path: string; name?: string; url?: string }[]>(CommandCenter.designerReposStorageKey, []);
+		const hiddenRepoPaths = await this.getDesignerHiddenRepoPaths();
 		const repos: { path: string; name: string; url?: string }[] = [];
 
 		for (const repo of storedRepos) {
-			if (!repo.path || repos.some(existing => pathEquals(existing.path, repo.path))) {
+			if (!repo.path || hiddenRepoPaths.some(hiddenPath => pathEquals(hiddenPath, repo.path)) || repos.some(existing => pathEquals(existing.path, repo.path))) {
 				continue;
 			}
 
@@ -3194,8 +3427,45 @@ export class CommandCenter {
 			});
 		}
 
+		for (const repo of await this.discoverDesignerManagedRepos()) {
+			if (hiddenRepoPaths.some(hiddenPath => pathEquals(hiddenPath, repo.path)) || repos.some(existing => pathEquals(existing.path, repo.path))) {
+				continue;
+			}
+
+			repos.push(repo);
+		}
+
 		if (repoToInclude && !repos.some(repo => pathEquals(repo.path, repoToInclude.path))) {
 			repos.push(repoToInclude);
+		}
+
+		return repos;
+	}
+
+	private async discoverDesignerManagedRepos(): Promise<{ path: string; name: string }[]> {
+		const parentPath = this.getDesignerCloneParentPath();
+		let entries: [string, FileType][];
+		try {
+			entries = await workspace.fs.readDirectory(Uri.file(parentPath));
+		} catch {
+			return [];
+		}
+
+		const repos: { path: string; name: string }[] = [];
+		for (const [entryName, entryType] of entries) {
+			if (entryType !== FileType.Directory) {
+				continue;
+			}
+
+			const repoPath = path.join(parentPath, entryName);
+			if (!await this.pathExists(path.join(repoPath, '.git'))) {
+				continue;
+			}
+
+			repos.push({
+				path: repoPath,
+				name: getRepositoryLabel(repoPath)
+			});
 		}
 
 		return repos;
@@ -3204,6 +3474,31 @@ export class CommandCenter {
 	private async storeDesignerKnownRepo(repoToStore: { path: string; name: string; url?: string }): Promise<void> {
 		const repos = await this.getDesignerKnownRepos(repoToStore);
 		await this.globalState.update(CommandCenter.designerReposStorageKey, repos);
+		await this.unhideDesignerRepo(repoToStore.path);
+	}
+
+	private async removeDesignerKnownRepo(repoPath: string): Promise<void> {
+		const storedRepos = this.globalState.get<{ path: string; name?: string; url?: string }[]>(CommandCenter.designerReposStorageKey, []);
+		await this.globalState.update(CommandCenter.designerReposStorageKey, storedRepos.filter(repo => !repo.path || !pathEquals(repo.path, repoPath)));
+	}
+
+	private async hideDesignerRepo(repoPath: string): Promise<void> {
+		const hiddenRepoPaths = await this.getDesignerHiddenRepoPaths();
+		if (hiddenRepoPaths.some(hiddenPath => pathEquals(hiddenPath, repoPath))) {
+			return;
+		}
+
+		await this.globalState.update(CommandCenter.designerRemovedReposStorageKey, [...hiddenRepoPaths, repoPath]);
+	}
+
+	private async unhideDesignerRepo(repoPath: string): Promise<void> {
+		const hiddenRepoPaths = await this.getDesignerHiddenRepoPaths();
+		await this.globalState.update(CommandCenter.designerRemovedReposStorageKey, hiddenRepoPaths.filter(hiddenPath => !pathEquals(hiddenPath, repoPath)));
+	}
+
+	private async getDesignerHiddenRepoPaths(): Promise<string[]> {
+		const hiddenRepoPaths = this.globalState.get<string[]>(CommandCenter.designerRemovedReposStorageKey, []);
+		return hiddenRepoPaths.filter(Boolean);
 	}
 
 	private getDesignerCloneParentPath(): string {
@@ -3249,8 +3544,16 @@ export class CommandCenter {
 	}
 
 	private async pickDesignerRepository(): Promise<Repository> {
-		const workspaceRoot = workspace.workspaceFolders?.[0]?.uri.fsPath;
+		const workspaceRepository = this.getDesignerWorkspaceRepository();
+		if (workspaceRepository) {
+			return workspaceRepository;
+		}
 
+		throw new Error(l10n.t('Project is still loading.'));
+	}
+
+	private getDesignerWorkspaceRepository(): Repository | undefined {
+		const workspaceRoot = workspace.workspaceFolders?.[0]?.uri.fsPath;
 		if (workspaceRoot) {
 			const workspaceRepository = this.model.repositories.find(repository =>
 				!repository.isHidden &&
@@ -3263,16 +3566,24 @@ export class CommandCenter {
 			}
 		}
 
-		const repository = await this.model.pickRepository(['repository', 'submodule']);
+		return undefined;
+	}
 
-		if (!repository) {
-			throw new Error(l10n.t('No repository selected.'));
-		}
-
-		return repository;
+	private getDesignerLoadingBranchState(): DesignerBranchState {
+		const workspaceRoot = workspace.workspaceFolders?.[0]?.uri.fsPath;
+		return {
+			projectName: workspaceRoot ? getRepositoryLabel(workspaceRoot) : l10n.t('Project'),
+			defaultBranch: undefined,
+			currentBranch: undefined,
+			syncState: 'syncing',
+			repositoryReady: false,
+			branches: [],
+			tree: []
+		};
 	}
 
 	private async getDesignerBranchesStateForRepository(repository: Repository): Promise<DesignerBranchState> {
+		await repository.status();
 		const refs = await repository.getRefs({});
 		const defaultRemote = repository.getDefaultRemote();
 		const branchRefs = this.toDesignerBranchRefs(refs);
@@ -3284,6 +3595,7 @@ export class CommandCenter {
 			defaultBranch,
 			currentBranch: repository.HEAD?.name,
 			syncState: 'synced',
+			repositoryReady: true,
 			branches,
 			tree: buildDesignerBranchTree(branches)
 		};

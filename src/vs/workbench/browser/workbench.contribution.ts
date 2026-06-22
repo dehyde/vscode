@@ -78,7 +78,7 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
 					localize('workbench.editor.editorActionsLocation.hidden', "Editor actions are not shown."),
 				],
 				'markdownDescription': localize('editorActionsLocation', "Controls where the editor actions are shown."),
-				'default': 'default',
+				'default': 'hidden',
 				agentsWindow: { default: 'default', readOnly: true },
 			},
 			'workbench.editor.alwaysShowEditorActions': {
