@@ -14,17 +14,15 @@
 }
 
 .designer-branch-switcher__button {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto auto;
+	display: flex;
 	align-items: center;
-	gap: 8px;
 	width: 100%;
-	height: 26px;
+	height: 24px;
 	padding: 0 8px;
-	color: var(--vscode-sideBarTitle-foreground);
-	background: var(--vscode-dropdown-background);
-	border: 1px solid var(--vscode-dropdown-border);
-	border-radius: 4px;
+	color: var(--vscode-statusBar-foreground, var(--vscode-sideBarTitle-foreground));
+	background: transparent;
+	border: 0;
+	border-radius: 2px;
 	font: inherit;
 	text-align: left;
 	cursor: pointer;
@@ -36,7 +34,7 @@
 
 .designer-branch-switcher__button:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: 1px;
+	outline-offset: -1px;
 }
 
 .designer-branch-switcher__label {
@@ -68,11 +66,12 @@
 	font-weight: 600;
 }
 
-.designer-branch-switcher__sync {
-	color: var(--vscode-icon-foreground);
+.designer-branch-switcher__branch-icon {
+	flex: 0 0 auto;
+	color: var(--vscode-statusBar-foreground, var(--vscode-icon-foreground));
 }
 
-.designer-branch-switcher__sync--problem {
+.designer-branch-switcher__branch-icon--problem {
 	color: var(--vscode-errorForeground);
 }
 
@@ -82,9 +81,11 @@
 	top: calc(100% + 4px);
 	left: 8px;
 	right: 8px;
+	display: flex;
+	flex-direction: column;
 	min-width: 260px;
 	max-height: min(520px, calc(100vh - 120px));
-	overflow: auto;
+	overflow: hidden;
 	padding: 6px;
 	color: var(--vscode-foreground);
 	background: var(--vscode-dropdown-background);
@@ -93,10 +94,62 @@
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow);
 }
 
+.designer-branch-switcher__dropdown[hidden] {
+	display: none;
+}
+
+.designer-branch-switcher__filter {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: center;
+	gap: 6px;
+	flex: 0 0 auto;
+	height: 30px;
+	margin-bottom: 6px;
+	padding: 0 8px;
+	color: var(--vscode-input-foreground);
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, var(--vscode-focusBorder));
+	border-radius: 4px;
+	box-sizing: border-box;
+}
+
+.designer-branch-switcher__filter:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.designer-branch-switcher__filter-icon {
+	color: var(--vscode-descriptionForeground);
+}
+
+.designer-branch-switcher__filter-input {
+	min-width: 0;
+	height: 100%;
+	padding: 0;
+	color: inherit;
+	background: transparent;
+	border: 0 !important;
+	font: inherit;
+	outline: 0 !important;
+	outline-offset: 0 !important;
+	box-shadow: none !important;
+	appearance: none;
+}
+
+.designer-branch-switcher__filter-input:focus,
+.designer-branch-switcher__filter-input:focus-visible {
+	border: 0 !important;
+	outline: 0 !important;
+	outline-offset: 0 !important;
+	box-shadow: none !important;
+}
+
 .designer-branch-switcher__tree {
 	display: flex;
 	flex-direction: column;
 	gap: 1px;
+	min-height: 0;
+	overflow: auto;
 }
 
 .designer-branch-switcher__folder,
@@ -138,6 +191,16 @@
 .designer-branch-switcher__row--current {
 	background: var(--vscode-list-activeSelectionBackground);
 	color: var(--vscode-list-activeSelectionForeground);
+	cursor: default;
+}
+
+.designer-branch-switcher__row--switching {
+	background: var(--vscode-list-focusBackground);
+	color: var(--vscode-list-focusForeground);
+	cursor: progress;
+}
+
+.designer-branch-switcher__row:disabled {
 	cursor: default;
 }
 
@@ -230,9 +293,15 @@
 	display: grid;
 	grid-template-columns: auto minmax(0, 1fr) auto;
 	gap: 6px;
+	flex: 0 0 auto;
 	margin-top: 8px;
-	padding-top: 8px;
+	margin-left: -6px;
+	margin-right: -6px;
+	margin-bottom: -6px;
+	padding: 10px 6px 6px;
 	border-top: 1px solid var(--vscode-widget-border);
+	background: var(--vscode-dropdown-background);
+	box-shadow: 0 -10px 18px var(--vscode-widget-shadow);
 }
 
 .designer-branch-switcher__prefix,
@@ -251,15 +320,33 @@
 	justify-content: center;
 	gap: 4px;
 	padding: 0 8px;
-	color: var(--vscode-button-secondaryForeground);
-	background: var(--vscode-button-secondaryBackground);
 	border: 0;
 	cursor: pointer;
 }
 
-.designer-branch-switcher__prefix:hover,
-.designer-branch-switcher__create:hover {
+.designer-branch-switcher__prefix {
+	color: var(--vscode-button-secondaryForeground);
+	background: var(--vscode-button-secondaryBackground);
+}
+
+.designer-branch-switcher__prefix:hover {
 	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.designer-branch-switcher__create {
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+}
+
+.designer-branch-switcher__create:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.designer-branch-switcher__create:disabled {
+	color: var(--vscode-disabledForeground);
+	background: var(--vscode-button-secondaryBackground);
+	cursor: default;
+	opacity: 0.65;
 }
 
 .designer-branch-switcher__input {
@@ -267,10 +354,11 @@
 	padding: 0 8px;
 	color: var(--vscode-input-foreground);
 	background: var(--vscode-input-background);
-	border: 1px solid var(--vscode-input-border);
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
 }
 
 .designer-branch-switcher__input:focus {
+	border-color: var(--vscode-focusBorder);
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }

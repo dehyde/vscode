@@ -87,6 +87,8 @@ export interface IPaneCompositeBarOptions {
 
 export class PaneCompositeBar extends Disposable {
 
+	private static readonly DESIGNER_HIDDEN_AUXILIARY_COMPOSITES = new Set(['workbench.panel.chat']);
+
 	private readonly viewContainerDisposables = this._register(new DisposableMap<string, IDisposable>());
 
 	private readonly compositeBar: CompositeBar;
@@ -292,6 +294,11 @@ export class PaneCompositeBar extends Disposable {
 			this.addComposite(viewContainer);
 			this.compositeBar.activateComposite(viewContainer.id);
 
+			if (this.isDesignerHiddenAuxiliaryComposite(viewContainer.id)) {
+				this.hideComposite(viewContainer.id);
+				return;
+			}
+
 			if (this.shouldBeHidden(viewContainer)) {
 				const viewContainerModel = this.viewDescriptorService.getViewContainerModel(viewContainer);
 				if (viewContainerModel.activeViewDescriptors.length === 0) {
@@ -434,6 +441,10 @@ export class PaneCompositeBar extends Disposable {
 		const viewContainer = isString(viewContainerOrId) ? this.getViewContainer(viewContainerOrId) : viewContainerOrId;
 		const viewContainerId = isString(viewContainerOrId) ? viewContainerOrId : viewContainerOrId.id;
 
+		if (this.isDesignerHiddenAuxiliaryComposite(viewContainerId)) {
+			return true;
+		}
+
 		if (viewContainer) {
 			if (viewContainer.hideIfEmpty) {
 				if (this.viewService.isViewContainerActive(viewContainerId)) {
@@ -459,6 +470,10 @@ export class PaneCompositeBar extends Disposable {
 		}
 
 		return true;
+	}
+
+	private isDesignerHiddenAuxiliaryComposite(viewContainerId: string): boolean {
+		return this.location === ViewContainerLocation.AuxiliaryBar && PaneCompositeBar.DESIGNER_HIDDEN_AUXILIARY_COMPOSITES.has(viewContainerId);
 	}
 
 	private addComposite(viewContainer: ViewContainer): void {

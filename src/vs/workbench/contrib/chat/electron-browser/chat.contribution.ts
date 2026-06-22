@@ -4,18 +4,19 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { timeout } from '../../../../base/common/async.js';
 import { autorun } from '../../../../base/common/observable.js';
 import { resolve } from '../../../../base/common/path.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ipcRenderer } from '../../../../base/parts/sandbox/electron-browser/globals.js';
-import { localize } from '../../../../nls.js';
-import { registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { localize, localize2 } from '../../../../nls.js';
+import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { EXTENSION_INSTALL_SKIP_PUBLISHER_TRUST_CONTEXT, IExtensionGalleryService } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { ILocalGitService } from '../../../../platform/git/common/localGitService.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -27,10 +28,12 @@ import { WorkbenchPhase, registerWorkbenchContribution2 } from '../../../common/
 import { ViewContainerLocation } from '../../../common/views.js';
 import { IChatEntitlementService } from '../../../services/chat/common/chatEntitlementService.js';
 import { INativeWorkbenchEnvironmentService } from '../../../services/environment/electron-browser/environmentService.js';
+import { IWorkbenchExtensionManagementService } from '../../../services/extensionManagement/common/extensionManagement.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
 import { IWorkbenchLayoutService } from '../../../services/layout/browser/layoutService.js';
 import { ILifecycleService, ShutdownReason } from '../../../services/lifecycle/common/lifecycle.js';
-import { ACTION_ID_NEW_CHAT, CHAT_OPEN_ACTION_ID, IChatViewOpenOptions } from '../browser/actions/chatActions.js';
+import { IPaneCompositePartService } from '../../../services/panecomposite/browser/panecomposite.js';
+import { ACTION_ID_NEW_CHAT, CHAT_CATEGORY, CHAT_CONFIG_MENU_ID, CHAT_OPEN_ACTION_ID, IChatViewOpenOptions } from '../browser/actions/chatActions.js';
 import { AgentHostContribution } from '../browser/agentSessions/agentHost/agentHostChatContribution.js';
 import { AgentHostTerminalContribution } from '../browser/agentSessions/agentHost/agentHostTerminalContribution.js';
 import { AgentSessionProviders, getAgentSessionProviderName } from '../browser/agentSessions/agentSessions.js';
@@ -232,10 +235,140 @@ class ChatLifecycleHandler extends Disposable {
 	}
 }
 
+class ClaudeCodeDefaultExperienceContribution extends Disposable {
+
+	static readonly ID = 'workbench.contrib.claudeCodeDefaultExperience';
+
+	private static readonly claudeExtensionId = 'anthropic.claude-code';
+	private static readonly claudeSidebarCommand = 'claude-vscode.sidebar.open';
+	private static readonly claudeSecondarySidebarContainer = 'claude-sidebar-secondary';
+	private static readonly maxOpenAttempts = 20;
+	private static readonly openRetryDelayMs = 1000;
+
+	private installAttempted = false;
+
+	constructor(
+		@IExtensionService private readonly extensionService: IExtensionService,
+		@IExtensionGalleryService private readonly extensionGalleryService: IExtensionGalleryService,
+		@IWorkbenchExtensionManagementService private readonly extensionManagementService: IWorkbenchExtensionManagementService,
+		@ICommandService private readonly commandService: ICommandService,
+		@IPaneCompositePartService private readonly paneCompositeService: IPaneCompositePartService,
+		@ILogService private readonly logService: ILogService,
+	) {
+		super();
+
+		this.openClaudeCodeByDefault().catch(error => this.logService.warn('Failed to open Claude Code by default', error));
+	}
+
+	private async openClaudeCodeByDefault(): Promise<void> {
+		await this.extensionService.whenInstalledExtensionsRegistered();
+
+		for (let attempt = 0; attempt < ClaudeCodeDefaultExperienceContribution.maxOpenAttempts; attempt++) {
+			if (await this.tryOpenClaudeCode()) {
+				return;
+			}
+
+			await timeout(ClaudeCodeDefaultExperienceContribution.openRetryDelayMs);
+		}
+
+		this.logService.warn('Claude Code extension did not become available for default sidebar opening');
+	}
+
+	private async tryOpenClaudeCode(): Promise<boolean> {
+		const extension = await this.getOrInstallClaudeCode();
+		if (!extension) {
+			return false;
+		}
+
+		await this.extensionService.activateById(extension.identifier, {
+			activationEvent: 'onStartupFinished',
+			extensionId: extension.identifier,
+			startup: false
+		});
+
+		try {
+			await this.commandService.executeCommand(ClaudeCodeDefaultExperienceContribution.claudeSidebarCommand);
+			return true;
+		} catch (error) {
+			this.logService.trace('Claude Code sidebar command is unavailable, opening contributed container instead', error);
+		}
+
+		const paneComposite = await this.paneCompositeService.openPaneComposite(ClaudeCodeDefaultExperienceContribution.claudeSecondarySidebarContainer, ViewContainerLocation.AuxiliaryBar, false);
+		return !!paneComposite;
+	}
+
+	private async getOrInstallClaudeCode() {
+		const extension = await this.extensionService.getExtension(ClaudeCodeDefaultExperienceContribution.claudeExtensionId);
+		if (extension || this.installAttempted) {
+			return extension;
+		}
+
+		this.installAttempted = true;
+
+		try {
+			const [galleryExtension] = await this.extensionGalleryService.getExtensions(
+				[{ id: ClaudeCodeDefaultExperienceContribution.claudeExtensionId }],
+				{ compatible: true },
+				CancellationToken.None
+			);
+
+			if (!galleryExtension) {
+				this.logService.warn('Claude Code gallery extension was not found');
+				return undefined;
+			}
+
+			await this.extensionManagementService.installFromGallery(galleryExtension, {
+				context: { [EXTENSION_INSTALL_SKIP_PUBLISHER_TRUST_CONTEXT]: true }
+			});
+		} catch (error) {
+			this.logService.warn('Failed to install Claude Code extension by default', error);
+			return undefined;
+		}
+
+		await timeout(ClaudeCodeDefaultExperienceContribution.openRetryDelayMs);
+		return this.extensionService.getExtension(ClaudeCodeDefaultExperienceContribution.claudeExtensionId);
+	}
+}
+
+class OpenNativeChatAction extends Action2 {
+
+	static readonly ID = 'workbench.action.chat.openNativeChatFromClaudeMenu';
+
+	constructor() {
+		super({
+			id: OpenNativeChatAction.ID,
+			title: localize2('openNativeChatFromClaudeMenu', 'Copilot'),
+			category: CHAT_CATEGORY,
+			menu: [
+				{
+					id: CHAT_CONFIG_MENU_ID,
+					group: 'navigation',
+					order: 100
+				},
+				{
+					id: MenuId.AuxiliaryBarTitle,
+					group: 'designerHiddenChat',
+					order: 100
+				},
+				{
+					id: MenuId.CommandPalette
+				}
+			]
+		});
+	}
+
+	override async run(accessor: ServicesAccessor): Promise<void> {
+		const commandService = accessor.get(ICommandService);
+		await commandService.executeCommand(ACTION_ID_NEW_CHAT);
+		await commandService.executeCommand(CHAT_OPEN_ACTION_ID, { query: '' } satisfies IChatViewOpenOptions);
+	}
+}
+
 registerAction2(OpenWorkspaceInAgentsWindowAction);
 registerAction2(ToggleOpenInAgentsWindowTitleBarAction);
 registerAction2(OpenAgentsWindowAction);
 registerAction2(OpenChatSessionInAgentsWindowAction);
+registerAction2(OpenNativeChatAction);
 registerAction2(StartVoiceChatAction);
 
 registerAction2(VoiceChatInChatViewAction);
@@ -259,6 +392,7 @@ registerWorkbenchContribution2(NativeBuiltinToolsContribution.ID, NativeBuiltinT
 registerWorkbenchContribution2(ChatCommandLineHandler.ID, ChatCommandLineHandler, WorkbenchPhase.BlockRestore);
 registerWorkbenchContribution2(ChatSuspendThrottlingHandler.ID, ChatSuspendThrottlingHandler, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(ChatLifecycleHandler.ID, ChatLifecycleHandler, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(ClaudeCodeDefaultExperienceContribution.ID, ClaudeCodeDefaultExperienceContribution, WorkbenchPhase.Eventually);
 registerWorkbenchContribution2(AgentHostContribution.ID, AgentHostContribution, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(AgentHostTerminalContribution.ID, AgentHostTerminalContribution, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(OpenWorkspaceInAgentsContribution.ID, OpenWorkspaceInAgentsContribution, WorkbenchPhase.BlockRestore);
