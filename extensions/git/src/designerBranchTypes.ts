@@ -50,3 +50,27 @@ export interface DesignerBranchCheckoutResult {
 		readonly message: string;
 	};
 }
+
+export type DesignerRepoStatus = 'ready' | 'cloning' | 'problem';
+
+export interface DesignerRepoItem {
+	readonly name: string;
+	readonly path: string;
+	readonly status: DesignerRepoStatus;
+	readonly isCurrent: boolean;
+	readonly url?: string;
+	readonly message?: string;
+}
+
+export interface DesignerRepoState {
+	readonly currentRepoPath: string | undefined;
+	readonly repos: readonly DesignerRepoItem[];
+}
+
+export interface DesignerRepoSwitchResult {
+	readonly state: DesignerRepoState;
+	readonly blocked?: {
+		readonly reason: 'branchNameRequired' | 'saveFailed';
+		readonly message: string;
+	};
+}

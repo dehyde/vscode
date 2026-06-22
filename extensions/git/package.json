@@ -55,6 +55,9 @@
     "onCommand:_designerBranches.checkout",
     "onCommand:_designerBranches.saveAndCheckout",
     "onCommand:_designerBranches.create",
+    "onCommand:_designerRepos.getState",
+    "onCommand:_designerRepos.clone",
+    "onCommand:_designerRepos.switch",
     "onEditSession:file",
     "onFileSystem:git",
     "onFileSystem:git-show"
